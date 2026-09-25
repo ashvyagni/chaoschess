@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub mod fen;
+pub mod notation;
 pub mod stats;
 pub mod suites;
 pub mod time;
