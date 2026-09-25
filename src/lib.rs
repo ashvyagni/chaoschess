@@ -10,6 +10,11 @@ pub mod suites;
 pub const STARTPOS: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const INF: i32 = 32_000;
 const MATE: i32 = 30_000;
+/// Any score beyond this magnitude is a mate score ("mate in N plies"), not an evaluation.
+const MATE_THRESHOLD: i32 = MATE - 1_000;
+/// Ceiling on history-heuristic values. History persists across iterative-deepening
+/// iterations, so without a bound it grows until it outranks the TT move and captures.
+const HISTORY_MAX: i32 = 16_384;
 pub const MAX_QUIESCENCE_PLY: u8 = 32;
 const PIECE_VALUES: [i32; 6] = [100, 320, 330, 500, 900, 20_000];
 
@@ -471,6 +476,9 @@ fn see(board: &Board, m: ChessMove) -> i32 {
 struct Entry {
     key: u64,
     depth: u8,
+    /// Search generation this entry was written in, used to prefer replacing stale data.
+    generation: u8,
+    /// Stored root-relative for mates; see [`score_to_tt`].
     score: i32,
     flag: Bound,
     best: Option<ChessMove>,
@@ -482,24 +490,79 @@ enum Bound {
     Upper,
 }
 
+/// Mate scores are "mate in N plies *from here*". The same position reached at a
+/// different ply has a different distance to mate from the root, so a mate score has to
+/// be converted to "distance from this node" before storing and back on retrieval.
+/// Storing it raw makes a mate found at ply 7 look like a mate at ply 3 when probed there.
+fn score_to_tt(score: i32, ply: u8) -> i32 {
+    if score > MATE_THRESHOLD {
+        score + i32::from(ply)
+    } else if score < -MATE_THRESHOLD {
+        score - i32::from(ply)
+    } else {
+        score
+    }
+}
+
+fn score_from_tt(score: i32, ply: u8) -> i32 {
+    if score > MATE_THRESHOLD {
+        score - i32::from(ply)
+    } else if score < -MATE_THRESHOLD {
+        score + i32::from(ply)
+    } else {
+        score
+    }
+}
+
 struct Table {
     entries: Vec<Option<Entry>>,
+    generation: u8,
 }
 impl Table {
     fn new(mb: usize) -> Self {
         let count = ((mb.max(1) * 1024 * 1024) / std::mem::size_of::<Option<Entry>>()).max(1);
         Self {
             entries: vec![None; count],
+            generation: 0,
         }
     }
+
+    fn slot(&self, key: u64) -> usize {
+        (key as usize) % self.entries.len()
+    }
+
+    /// The entry for exactly this position, if one is stored.
+    ///
+    /// The key comparison is the whole point: many positions share a slot, and returning
+    /// a neighbour's bound as if it were this position's is silent search corruption.
+    /// The audited baseline omitted it (MASTER_ENGINE_AUDIT.md §G.2).
     fn get(&self, key: u64) -> Option<Entry> {
-        self.entries[(key as usize) % self.entries.len()]
+        self.entries[self.slot(key)].filter(|entry| entry.key == key)
     }
+
+    /// Replacement policy: always replace an empty slot, a slot holding the same
+    /// position, or a slot left over from an earlier search; otherwise keep whichever
+    /// entry was searched deeper.
     fn put(&mut self, entry: Entry) {
-        let slot = (entry.key as usize) % self.entries.len();
-        if self.entries[slot].is_none_or(|old| entry.depth >= old.depth) {
-            self.entries[slot] = Some(entry);
+        let slot = self.slot(entry.key);
+        let replace = match self.entries[slot] {
+            None => true,
+            Some(old) => {
+                old.key == entry.key || old.generation != self.generation || entry.depth >= old.depth
+            }
+        };
+        if replace {
+            self.entries[slot] = Some(Entry {
+                generation: self.generation,
+                ..entry
+            });
         }
+    }
+
+    /// Start a new search. Entries from earlier searches stay usable but become the
+    /// first candidates for replacement.
+    fn new_search(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
     }
 }
 
@@ -513,6 +576,17 @@ struct Searcher {
 }
 
 impl Searcher {
+    fn new(limits: SearchLimits) -> Self {
+        Self {
+            table: Table::new(limits.hash_mb),
+            limits,
+            start: Instant::now(),
+            nodes: 0,
+            stopped: false,
+            history: [[0; 64]; 64],
+        }
+    }
+
     fn stop(&mut self) {
         self.stopped |= self.limits.nodes.is_some_and(|n| self.nodes >= n);
         self.stopped |= self.limits.time.is_some_and(|t| self.start.elapsed() >= t);
@@ -646,10 +720,11 @@ impl Searcher {
         let key = board.get_hash();
         let tt = self.table.get(key);
         if let Some(entry) = tt.filter(|e| e.depth >= depth) {
+            let tt_score = score_from_tt(entry.score, ply);
             match entry.flag {
-                Bound::Exact => return entry.score,
-                Bound::Lower if entry.score >= beta => return entry.score,
-                Bound::Upper if entry.score <= alpha => return entry.score,
+                Bound::Exact => return tt_score,
+                Bound::Lower if tt_score >= beta => return tt_score,
+                Bound::Upper if tt_score <= alpha => return tt_score,
                 _ => {}
             }
         }
@@ -667,8 +742,9 @@ impl Searcher {
             }
             alpha = alpha.max(score);
             if alpha >= beta {
-                self.history[m.get_source().to_index()][m.get_dest().to_index()] +=
-                    i32::from(depth) * i32::from(depth);
+                if !is_capture(board, m) {
+                    self.reward_history(m, depth);
+                }
                 break;
             }
         }
@@ -682,11 +758,24 @@ impl Searcher {
         self.table.put(Entry {
             key,
             depth,
-            score,
+            generation: 0, // stamped by Table::put
+            score: score_to_tt(score, ply),
             flag,
             best,
         });
         score
+    }
+
+    /// Credit a quiet move that caused a beta cutoff.
+    ///
+    /// Uses the "gravity" update `h += b - h*b/MAX`, which saturates smoothly at
+    /// [`HISTORY_MAX`] instead of growing without bound. Only quiet moves are credited:
+    /// captures are already ordered by MVV-LVA, and crediting them too lets history
+    /// swamp that ordering.
+    fn reward_history(&mut self, m: ChessMove, depth: u8) {
+        let bonus = (i32::from(depth) * i32::from(depth)).min(HISTORY_MAX);
+        let entry = &mut self.history[m.get_source().to_index()][m.get_dest().to_index()];
+        *entry += bonus - *entry * bonus / HISTORY_MAX;
     }
 }
 
@@ -694,22 +783,37 @@ pub fn best_move(board: &Board, limits: SearchLimits) -> Option<ChessMove> {
     search(board, limits).map(|result| result.best_move)
 }
 
+/// Search the root position with principal variation search.
+///
+/// The first move -- the previous iteration's best move, when there is one -- is searched
+/// with the full window, because its score defines the PV. Every later move gets a null
+/// window scout and is only re-searched in full if it might beat the current best. The
+/// audited baseline scouted the first move too and never re-searched it (§G.3), so on
+/// iteration one the PV move's score was a bound against a window of (31999, 32000).
 fn search_root(
     board: &Board,
     depth: u8,
     mut alpha: i32,
     beta: i32,
     searcher: &mut Searcher,
+    previous_best: Option<ChessMove>,
 ) -> Option<(ChessMove, i32)> {
-    let moves = searcher.ordered(board, None, true);
+    let moves = searcher.ordered(board, previous_best, true);
+    let child_depth = depth.saturating_sub(1);
     let mut best = None;
     let mut best_score = -INF;
     for (index, m) in moves.into_iter().enumerate() {
         let child = board.make_move_new(m);
-        let mut value = -searcher.negamax(&child, depth.saturating_sub(1), -alpha - 1, -alpha, 1);
-        if index > 0 && value > alpha && value < beta && !searcher.stopped {
-            value = -searcher.negamax(&child, depth.saturating_sub(1), -beta, -alpha, 1);
-        }
+        let value = if index == 0 {
+            -searcher.negamax(&child, child_depth, -beta, -alpha, 1)
+        } else {
+            let scout = -searcher.negamax(&child, child_depth, -alpha - 1, -alpha, 1);
+            if scout > alpha && scout < beta && !searcher.stopped {
+                -searcher.negamax(&child, child_depth, -beta, -alpha, 1)
+            } else {
+                scout
+            }
+        };
         if searcher.stopped {
             break;
         }
@@ -718,6 +822,11 @@ fn search_root(
             best = Some(m);
         }
         alpha = alpha.max(value);
+        if alpha >= beta {
+            // Fail high against an aspiration window: the caller re-searches with a
+            // wider window, so finishing the remaining moves here is wasted work.
+            break;
+        }
     }
     best.map(|m| (m, best_score))
 }
@@ -737,14 +846,7 @@ fn parallel_root(
                     let mut local_limits = limits;
                     local_limits.threads = 1;
                     local_limits.time = limits.time.map(|t| t.saturating_sub(started.elapsed()));
-                    let mut searcher = Searcher {
-                        table: Table::new(local_limits.hash_mb),
-                        limits: local_limits,
-                        start: Instant::now(),
-                        nodes: 0,
-                        stopped: false,
-                        history: [[0; 64]; 64],
-                    };
+                    let mut searcher = Searcher::new(local_limits);
                     let score = -searcher.negamax(
                         &board.make_move_new(*m),
                         depth.saturating_sub(1),
@@ -777,16 +879,16 @@ pub fn search(board: &Board, limits: SearchLimits) -> Option<SearchResult> {
     let mut completed_depth = 0;
     let mut result_score = 0;
     let mut total_nodes = 0;
-    let mut previous = 0;
+    let mut previous: i32 = 0;
+
+    // One searcher for the whole iterative-deepening run. The baseline built a fresh one
+    // -- a freshly zeroed transposition table and history -- for every depth, so each
+    // iteration re-derived everything the previous one had just learned, and each depth
+    // also restarted the clock.
+    let mut searcher = Searcher::new(limits);
+    searcher.table.new_search();
+
     for depth in 1..=limits.depth.max(1) {
-        let mut searcher = Searcher {
-            table: Table::new(limits.hash_mb),
-            limits,
-            start: Instant::now(),
-            nodes: 0,
-            stopped: false,
-            history: [[0; 64]; 64],
-        };
         let candidate = if limits.threads > 1 {
             parallel_root(board, depth, limits).map(|(m, score, nodes, stopped)| {
                 total_nodes += nodes;
@@ -794,21 +896,24 @@ pub fn search(board: &Board, limits: SearchLimits) -> Option<SearchResult> {
                 (m, score)
             })
         } else {
-            let (alpha, beta) = if completed_depth > 0 {
+            let nodes_before = searcher.nodes;
+            let previous_best = (completed_depth > 0).then_some(result);
+            let (alpha, beta) = if completed_depth > 0 && previous.abs() < MATE_THRESHOLD {
                 (previous - 40, previous + 40)
             } else {
                 (-INF, INF)
             };
-            let mut candidate = search_root(board, depth, alpha, beta, &mut searcher);
+            let mut candidate =
+                search_root(board, depth, alpha, beta, &mut searcher, previous_best);
             if !searcher.stopped
-                && completed_depth > 0
+                && (alpha, beta) != (-INF, INF)
                 && candidate
                     .as_ref()
                     .is_some_and(|(_, s)| *s <= alpha || *s >= beta)
             {
-                candidate = search_root(board, depth, -INF, INF, &mut searcher);
+                candidate = search_root(board, depth, -INF, INF, &mut searcher, previous_best);
             }
-            total_nodes += searcher.nodes;
+            total_nodes += searcher.nodes - nodes_before;
             candidate
         };
         if let Some((m, score)) = candidate {
@@ -967,10 +1072,14 @@ mod tests {
         ];
         for fen in positions {
             let board = Board::from_str(fen).unwrap();
+            // The node cap is what turns a regression into a fast failure: without it, a
+            // returning blowup hangs the test run instead of failing it (found by
+            // mutation testing -- reintroducing unbounded checks hung for >10 minutes).
             let result = search(
                 &board,
                 SearchLimits {
                     depth: 4,
+                    nodes: Some(1_000_000),
                     ..Default::default()
                 },
             )
@@ -981,11 +1090,140 @@ mod tests {
             );
             assert_eq!(result.depth, 4, "did not complete depth 4 in {fen}");
             assert!(
-                result.nodes < 5_000_000,
+                result.nodes < 1_000_000,
                 "{fen}: {} nodes at depth 4 -- quiescence blowup has returned",
                 result.nodes
             );
         }
+    }
+
+    /// Regression for MASTER_ENGINE_AUDIT.md §G.2: two different positions that map to
+    /// the same slot must not see each other's entries.
+    #[test]
+    fn transposition_table_rejects_slot_collisions() {
+        let mut table = Table::new(1);
+        let len = table.entries.len() as u64;
+        let key = 12_345;
+        let colliding = key + len; // same slot, different position
+        assert_eq!(table.slot(key), table.slot(colliding));
+
+        table.put(Entry {
+            key,
+            depth: 9,
+            generation: 0,
+            score: 777,
+            flag: Bound::Exact,
+            best: None,
+        });
+        assert!(table.get(key).is_some(), "the stored position must be found");
+        assert!(
+            table.get(colliding).is_none(),
+            "a different position in the same slot must not be returned"
+        );
+    }
+
+    /// A mate score converted for storage at one ply and read back at the same ply must
+    /// be unchanged, and ordinary scores must never be touched.
+    #[test]
+    fn tt_mate_scores_round_trip() {
+        for ply in [0u8, 1, 7, 40] {
+            for score in [
+                MATE - 3,
+                -MATE + 5,
+                MATE_THRESHOLD + 1,
+                -MATE_THRESHOLD - 1,
+                0,
+                250,
+                -1_234,
+            ] {
+                assert_eq!(score_from_tt(score_to_tt(score, ply), ply), score);
+            }
+            assert_eq!(score_to_tt(250, ply), 250, "non-mate scores are ply-independent");
+        }
+        // Mate in 3 plies found at ply 5 is "mate at ply 8" from the root. Probed at
+        // ply 2 the same position is still 3 plies from mate, i.e. mate at ply 5.
+        let found = MATE - 8;
+        let stored = score_to_tt(found, 5);
+        assert_eq!(score_from_tt(stored, 2), MATE - 5);
+    }
+
+    /// Full-width minimax over the same quiescence search: no pruning, no windows, no TT.
+    /// Slow, but its answer does not depend on any of the search machinery under test.
+    fn reference_minimax(reference: &mut Searcher, board: &Board, depth: u8, ply: u8) -> i32 {
+        match board.status() {
+            BoardStatus::Checkmate => return -MATE + i32::from(ply),
+            BoardStatus::Stalemate => return 0,
+            BoardStatus::Ongoing => {}
+        }
+        if depth == 0 {
+            return reference.quiescence(board, -INF, INF, ply, 0);
+        }
+        MoveGen::new_legal(board)
+            .map(|m| -reference_minimax(reference, &board.make_move_new(m), depth - 1, ply + 1))
+            .max()
+            .unwrap()
+    }
+
+    /// Regression for MASTER_ENGINE_AUDIT.md §G.3: PVS, aspiration windows and the TT are
+    /// all supposed to be *score-preserving* -- they change how much is searched, never
+    /// the answer. So at shallow depth the reported score must equal plain minimax.
+    ///
+    /// Up to depth 2 this is exact, not approximate: ply-1 positions cannot transpose into
+    /// each other, and depth-0 nodes never probe the TT, so no entry from a deeper search
+    /// can substitute for a shallower one.
+    ///
+    /// The baseline scouted the first root move with a (31999, 32000) window and never
+    /// re-searched it. At depth 1 that only truncates exchanges longer than two plies,
+    /// which is why an earlier depth-1-only version of this test did not catch it (verified
+    /// by mutation testing). At depth 2 it collapses the first move's whole subtree to
+    /// static evaluation.
+    #[test]
+    fn shallow_search_score_equals_plain_minimax() {
+        let fens = [
+            STARTPOS,
+            "r3k2r/p1ppqpb1/bn2pnp1/2pP4/1p2P3/2N2N2/PPPQBPPP/R3K2R w KQkq - 0 1",
+            "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1",
+            "4k3/8/2p5/3p4/8/8/8/3QK3 w - - 0 1",
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 1",
+            // Constructed to expose §G.3. Qxc6+ is the only capture and gives check, so it
+            // is always ordered first; it forks the king and the a8 rook. The rook is only
+            // won in the *grandchild's* quiescence, after Black's forced king move -- which
+            // is exactly the part a (31999, 32000) window cuts off with an immediate stand
+            // pat. The general positions above happen not to depend on that, which is why
+            // a test built only from them passed against the buggy code.
+            "r3k3/8/2p5/8/8/8/8/2Q1K3 w - - 0 1",
+        ];
+        for fen in fens {
+            let board = Board::from_str(fen).unwrap();
+            for depth in 1..=2 {
+                let limits = SearchLimits {
+                    depth,
+                    ..Default::default()
+                };
+                let mut reference = Searcher::new(limits);
+                let exact = reference_minimax(&mut reference, &board, depth, 0);
+                let got = search(&board, limits).unwrap();
+                assert_eq!(
+                    got.score, exact,
+                    "{fen} depth {depth}: search reported {}, plain minimax says {exact}",
+                    got.score
+                );
+            }
+        }
+    }
+
+    /// History must stay bounded however many cutoffs a move produces, otherwise it
+    /// eventually outranks the transposition-table move in ordering.
+    #[test]
+    fn history_is_bounded() {
+        let mut searcher = Searcher::new(SearchLimits::default());
+        let m = ChessMove::new(Square::G1, Square::F3, None);
+        for _ in 0..100_000 {
+            searcher.reward_history(m, 20);
+        }
+        let value = searcher.history[Square::G1.to_index()][Square::F3.to_index()];
+        assert!(value <= HISTORY_MAX, "history grew to {value}");
+        assert!(value > HISTORY_MAX / 2, "history should saturate near the cap, got {value}");
     }
 
     #[test]

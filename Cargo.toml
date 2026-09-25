@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "A correctness-first Rust chess engine with UCI support."
 license = "MIT"
+# src/bin/ holds research tools; `cargo run` (used by uci_bridge.py as a fallback)
+# must still start the engine.
+default-run = "crazy-chess"
 
 [dependencies]
 chess = "3.2"
