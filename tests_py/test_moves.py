@@ -168,3 +168,43 @@ class Perft(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GameEnd(unittest.TestCase):
+    """Rules the GUI uses to end a game (moves.game_over_reason)."""
+
+    def keys_after(self, fen, moves):
+        from moves import position_key
+        b = board(fen)
+        keys = [position_key(b)]
+        for uci in moves:
+            b = apply_move(b, next(m for m in generate_legal_moves(b) if str(m) == uci))
+            keys.append(position_key(b))
+        return b, keys
+
+    def test_threefold_repetition(self):
+        from moves import game_over_reason
+        start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        shuffle = ["g1f3", "g8f6", "f3g1", "f6g8"]
+        b, keys = self.keys_after(start, shuffle)
+        self.assertIsNone(game_over_reason(b, keys), "twofold is not a draw")
+        b, keys = self.keys_after(start, shuffle * 2)
+        self.assertEqual(game_over_reason(b, keys), "threefold repetition")
+
+    def test_unusable_en_passant_square_does_not_hide_a_repetition(self):
+        from moves import position_key
+        # After 1.e4 nothing can capture en passant, so the position equals the same
+        # placement reached without a double push.
+        after_e4 = board("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
+        same = board("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1")
+        self.assertEqual(position_key(after_e4), position_key(same))
+
+    def test_insufficient_material_and_other_endings(self):
+        from moves import game_over_reason
+        self.assertEqual(game_over_reason(board("8/8/8/4k3/8/8/8/2B1K3 w - - 0 1"), []),
+                         "insufficient material")
+        self.assertIsNone(game_over_reason(board("8/8/8/4k3/8/8/8/R3K3 w - - 0 1"), []))
+        self.assertEqual(game_over_reason(board("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1"), []), "stalemate")
+        self.assertEqual(game_over_reason(board("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1"), []), "checkmate")
+        self.assertEqual(game_over_reason(board("4k3/8/8/8/8/8/P7/R3K3 w - - 100 90"), []),
+                         "fifty-move rule")

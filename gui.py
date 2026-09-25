@@ -50,6 +50,8 @@ class ChessGUI(QMainWindow):
         self.player_color = WHITE
         self.engine_thinking = False
         self.move_history = []
+        # position_key() of every position in the game, for threefold repetition.
+        self.position_keys = [position_key(self.board)]
         self.status_msg = "Your turn (White)"
 
         self.uci_engine = None
@@ -205,6 +207,7 @@ class ChessGUI(QMainWindow):
         self.last_move = None
         self.game_over = False
         self.move_history = []
+        self.position_keys = [position_key(self.board)]
         self.move_list.clear()
         self.status_msg = "Your turn" if self.board.color == self.player_color else "Engine thinking..."
         self.status_label.setText(self.status_msg)
@@ -372,13 +375,14 @@ class ChessGUI(QMainWindow):
         self.move_list.addItem(f"{len(self.move_history)}. {move}")
         self.last_move = move
         self.board = apply_move(self.board, move)
+        self.position_keys.append(position_key(self.board))
         self.selected_sq = -1
         self.legal_moves_for_sq = []
 
         self.turn_label.setText("White to move" if self.board.color == WHITE else "Black to move")
         self.board_widget.update()
 
-        if is_game_over(self.board):
+        if self.over():
             self.end_game()
         else:
             self.status_label.setText("Engine thinking...")
@@ -394,7 +398,8 @@ class ChessGUI(QMainWindow):
             self.status_label.setText("Rust engine unavailable")
             self.engine_thinking = False
             return
-        move_text = self.uci_engine.best_move(self.board.to_fen())
+        # The whole game, not just the FEN, so the engine can see repetitions.
+        move_text = self.uci_engine.best_move(self.board.to_fen(), self.move_history)
         move = next((candidate for candidate in legal_moves if str(candidate) == move_text), None)
         if move is None:
             raise RuntimeError(f"Rust engine returned unknown legal move: {move_text}")
@@ -403,6 +408,7 @@ class ChessGUI(QMainWindow):
         self.move_list.addItem(f"{len(self.move_history)}. {move}")
         self.last_move = move
         self.board = apply_move(self.board, move)
+        self.position_keys.append(position_key(self.board))
 
         info = self.uci_engine.last_info
         self.eval_label.setText(
@@ -412,7 +418,7 @@ class ChessGUI(QMainWindow):
         self.turn_label.setText("White to move" if self.board.color == WHITE else "Black to move")
         self.engine_thinking = False
 
-        if is_game_over(self.board):
+        if self.over():
             self.end_game()
         else:
             self.status_label.setText("Your turn")
@@ -433,7 +439,7 @@ class ChessGUI(QMainWindow):
         QTimer.singleShot(100, self.engine_vs_engine_step)
 
     def engine_vs_engine_step(self):
-        if self.game_over or is_game_over(self.board):
+        if self.game_over or self.over():
             self.end_game()
             return
 
@@ -443,15 +449,20 @@ class ChessGUI(QMainWindow):
         self.board_widget.update()
         QTimer.singleShot(300, self.engine_vs_engine_step)
 
+    def over(self):
+        return game_over_reason(self.board, self.position_keys) is not None
+
     def end_game(self):
         self.game_over = True
         self.engine_thinking = False
-        result = get_result(self.board)
-        if is_checkmate(self.board):
+        reason = game_over_reason(self.board, self.position_keys)
+        if reason == "checkmate":
             winner = "Black" if self.board.color == WHITE else "White"
             self.status_label.setText(f"Checkmate! {winner} wins!")
         else:
-            self.status_label.setText("Draw!")
+            # Previously every non-mate ending said just "Draw!", and threefold repetition
+            # and insufficient material were never detected at all.
+            self.status_label.setText(f"Draw ({reason})" if reason else "Draw")
         self.board_widget.update()
 
     def closeEvent(self, event):
@@ -460,7 +471,47 @@ class ChessGUI(QMainWindow):
         super().closeEvent(event)
 
 
+def qt_platform_plugin_problem():
+    """Explain why Qt will not find its platform plugins, or return None if it will.
+
+    Qt aborts the whole process with an opaque "Could not find the Qt platform plugin"
+    when this happens, so it is checked before QApplication is created.
+
+    The known cause: macOS marks every file inside a dot-directory as hidden when the
+    directory is synced by iCloud (Desktop & Documents), and Qt's plugin loader skips
+    hidden files. A `.venv` inside ~/Documents is exactly that case. The flag is reapplied
+    by the sync agent within about a minute, so clearing it by hand does not last.
+    """
+    import stat
+    from pathlib import Path
+    import PySide6
+
+    platforms = Path(PySide6.__file__).resolve().parent / "Qt" / "plugins" / "platforms"
+    candidates = [platforms, *platforms.glob("*.dylib")]
+    try:
+        hidden = [c for c in candidates if c.stat().st_flags & stat.UF_HIDDEN]
+    except (AttributeError, OSError):  # st_flags is BSD/macOS only
+        return None
+    if not hidden:
+        return None
+    return (
+        f"Qt cannot load its platform plugins: {platforms}\n"
+        "is marked hidden by macOS, and Qt skips hidden plugin files.\n"
+        "This happens when a virtual environment whose name starts with a dot lives in an\n"
+        "iCloud-synced folder: iCloud marks dot-folders and their contents hidden.\n\n"
+        "Fix: create the environment outside iCloud, for example\n"
+        "    python3 -m venv ~/.venvs/chaoschess\n"
+        "    ~/.venvs/chaoschess/bin/pip install PySide6 numpy\n"
+        "    ~/.venvs/chaoschess/bin/python main.py\n"
+        "(`chflags -R nohidden` on the plugins folder works only until iCloud reapplies it.)"
+    )
+
+
 def run_gui():
+    problem = qt_platform_plugin_problem()
+    if problem:
+        print(problem, file=sys.stderr)
+        sys.exit(1)
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
     palette = QPalette()

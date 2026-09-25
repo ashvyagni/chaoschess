@@ -86,10 +86,21 @@ class UCIEngine:
                 return line
         raise RuntimeError(f"engine exited before replying with {expected}")
 
-    def best_move(self, fen: str, moves: list[str] | None = None) -> str:
-        # The FEN already describes the current board. Replaying the move list
-        # after it would apply every move twice.
-        self._send("position", "fen", *fen.split())
+    def best_move(self, fen: str, moves: list[str] | None = None,
+                  start_fen: str | None = None) -> str:
+        """Ask for a move.
+
+        With `moves`, the game is sent from its start (`start_fen`, or the standard start
+        position) followed by every move, so the engine knows the history: that is what
+        lets it see threefold repetition and the fifty-move rule. `fen` is then only a
+        fallback for callers without a move list. Replaying moves *after* `fen` would
+        apply them twice.
+        """
+        if moves:
+            setup = ["fen", *start_fen.split()] if start_fen else ["startpos"]
+            self._send("position", *setup, "moves", *moves)
+        else:
+            self._send("position", "fen", *fen.split())
         self._send("go", "depth", self.depth)
         if self.process.stdout is None:
             raise RuntimeError("engine stdout is unavailable")

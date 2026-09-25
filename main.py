@@ -34,6 +34,11 @@ def cmd_selfplay_visual():
     from PySide6.QtCore import QTimer
     import time
 
+    from gui import qt_platform_plugin_problem
+    problem = qt_platform_plugin_problem()
+    if problem:
+        print(problem, file=sys.stderr)
+        sys.exit(1)
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyle('Fusion')
 

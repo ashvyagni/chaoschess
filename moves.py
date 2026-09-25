@@ -295,6 +295,52 @@ def is_game_over(board):
     return False
 
 
+def position_key(board):
+    """Identity of a position for repetition (FIDE 9.2.2): piece placement, side to move,
+    castling rights, and the en passant square *only if an en passant capture is actually
+    legal*. board.ep_sq is set after every double push, whether or not anything can capture,
+    so including it unconditionally would hide real repetitions.
+    """
+    placement, side, castling, ep = board.to_fen().split()[:4]
+    if ep != '-' and not any(m.ep for m in generate_legal_moves(board)):
+        ep = '-'
+    return f"{placement} {side} {castling} {ep}"
+
+
+def insufficient_material(board):
+    """Neither side can mate: bare kings, one minor piece, or only same-coloured bishops.
+    Same rule as the Rust engine's insufficient_material()."""
+    heavy = (board.pieces[W_PAWN] | board.pieces[B_PAWN] | board.pieces[W_ROOK]
+             | board.pieces[B_ROOK] | board.pieces[W_QUEEN] | board.pieces[B_QUEEN])
+    if heavy:
+        return False
+    knights = board.pieces[W_KNIGHT] | board.pieces[B_KNIGHT]
+    bishops = board.pieces[W_BISHOP] | board.pieces[B_BISHOP]
+    if count_bits(knights | bishops) <= 1:
+        return True
+    light = 0x55AA55AA55AA55AA
+    on_light = count_bits(bishops & light)
+    return knights == 0 and on_light in (0, count_bits(bishops))
+
+
+def game_over_reason(board, keys):
+    """Why the game is over, or None. `keys` holds position_key() of every position in the
+    game so far, the current one last.
+
+    Checkmate is tested first: a mate on the hundredth halfmove is still mate.
+    """
+    legal = generate_legal_moves(board)
+    if not legal:
+        return "checkmate" if board.in_check() else "stalemate"
+    if board.halfmove >= 100:
+        return "fifty-move rule"
+    if keys and keys.count(keys[-1]) >= 3:
+        return "threefold repetition"
+    if insufficient_material(board):
+        return "insufficient material"
+    return None
+
+
 def get_result(board):
     if is_checkmate(board):
         return -1 if board.color == WHITE else 1
