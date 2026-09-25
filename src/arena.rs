@@ -535,7 +535,13 @@ fn color_name(color: Color) -> &'static str {
     }
 }
 
-/// Render a game as PGN (export format: tags, SAN movetext, engine-output comments).
+/// Render a game as PGN (export format).
+///
+/// The opening moves are included in the movetext, marked `{book}`, and the game starts
+/// from the standard position unless the opening itself starts from a FEN. That keeps the
+/// move numbers right for any reader. The first version emitted a `FEN` tag for the
+/// position after the book, but the crate's `Board` drops the move counters, so the tag
+/// said "move 1" while the movetext said "4.".
 pub fn to_pgn(game: &GameRecord, event: &str, round: usize, date: &str, time_control: &TimeControl) -> String {
     let mut pgn = String::new();
     let tags = [
@@ -552,27 +558,24 @@ pub fn to_pgn(game: &GameRecord, event: &str, round: usize, date: &str, time_con
     for (k, v) in tags {
         let _ = writeln!(pgn, "[{k} \"{}\"]", v.replace('\\', "\\\\").replace('"', "\\\""));
     }
-    let start = game.opening.position().expect("validated opening");
-    if game.opening.fen.is_some() || !game.opening.moves.is_empty() {
-        let _ = writeln!(pgn, "[SetUp \"1\"]");
-        let _ = writeln!(pgn, "[FEN \"{}\"]", start.board);
-        let _ = writeln!(pgn, "[Opening \"{}\"]", game.opening.moves.join(" "));
-    }
+    let (mut board, mut fullmove) = match &game.opening.fen {
+        None => (Board::from_str(STARTPOS).expect("start position"), 1usize),
+        Some(fen) => {
+            let parsed = parse_fen(fen).expect("validated opening");
+            let fields: Vec<&str> = fen.split_whitespace().collect();
+            let full = format!(
+                "{} {} {} {} {} {}",
+                fields[0], fields[1], fields[2], fields[3], parsed.halfmove_clock, parsed.fullmove_number
+            );
+            let _ = writeln!(pgn, "[SetUp \"1\"]");
+            let _ = writeln!(pgn, "[FEN \"{full}\"]");
+            (parsed.board, parsed.fullmove_number as usize)
+        }
+    };
     pgn.push('\n');
 
-    let mut board = start.board;
-    // The crate's Board drops the fullmove counter, so number from the opening length.
-    let mut fullmove = 1 + game.opening.moves.len() / 2
-        + game.opening.fen.as_deref().and_then(|f| parse_fen(f).ok()).map_or(0, |f| f.fullmove_number as usize - 1);
-    let mut line = String::new();
-    let mut tokens: Vec<String> = Vec::new();
-    for (i, mv) in game.moves.iter().enumerate() {
-        if board.side_to_move() == Color::White {
-            tokens.push(format!("{fullmove}."));
-        } else if i == 0 {
-            tokens.push(format!("{fullmove}..."));
-        }
-        tokens.push(mv.san.clone());
+    let book = game.opening.moves.iter().map(|uci| (uci.as_str(), "book".to_string()));
+    let played = game.moves.iter().map(|mv| {
         let mut comment = String::new();
         if let Some(cp) = mv.score_cp {
             let _ = write!(comment, "{:+.2}", f64::from(cp) / 100.0);
@@ -582,14 +585,27 @@ pub fn to_pgn(game: &GameRecord, event: &str, round: usize, date: &str, time_con
             comment.push(' ');
         }
         let _ = write!(comment, "{:.3}s", mv.millis as f64 / 1000.0);
+        (mv.uci.as_str(), comment)
+    });
+    let mut tokens: Vec<String> = Vec::new();
+    for (i, (uci, comment)) in book.chain(played).enumerate() {
+        let white = board.side_to_move() == Color::White;
+        if white {
+            tokens.push(format!("{fullmove}."));
+        } else if i == 0 {
+            tokens.push(format!("{fullmove}..."));
+        }
+        let m = parse_move(&board, uci).expect("recorded moves are legal");
+        tokens.push(to_san(&board, m));
         tokens.push(format!("{{{comment}}}"));
-        let m = parse_move(&board, &mv.uci).expect("recorded moves are legal");
-        if board.side_to_move() == Color::Black {
+        if !white {
             fullmove += 1;
         }
         board = board.make_move_new(m);
     }
     tokens.push(game.outcome.pgn().to_string());
+
+    let mut line = String::new();
     for token in tokens {
         if line.len() + token.len() + 1 > 79 && !line.is_empty() {
             pgn.push_str(line.trim_end());
