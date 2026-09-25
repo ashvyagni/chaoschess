@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub mod arena;
 pub mod fen;
 pub mod notation;
 pub mod stats;
