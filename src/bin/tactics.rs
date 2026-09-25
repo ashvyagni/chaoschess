@@ -8,7 +8,9 @@ use chess::Board;
 use crazy_chess::suites::MATE_SUITE;
 use crazy_chess::{move_forces_mate, search, SearchLimits, Style, MAX_QUIESCENCE_PLY};
 use std::str::FromStr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+const PER_POSITION_CAP_S: u64 = 10;
 
 struct Outcome {
     solved: usize,
@@ -16,6 +18,7 @@ struct Outcome {
     nodes: u64,
     seconds: f64,
     unsolved: Vec<String>,
+    capped: usize,
 }
 
 fn run(label: &str, limits_for: impl Fn(u8) -> SearchLimits, budget_s: f64) -> Outcome {
@@ -25,6 +28,7 @@ fn run(label: &str, limits_for: impl Fn(u8) -> SearchLimits, budget_s: f64) -> O
         nodes: 0,
         seconds: 0.0,
         unsolved: Vec::new(),
+        capped: 0,
     };
     for &(fen, mate_in) in MATE_SUITE {
         let board = Board::from_str(fen).expect("verified fen");
@@ -33,6 +37,9 @@ fn run(label: &str, limits_for: impl Fn(u8) -> SearchLimits, budget_s: f64) -> O
         let result = search(&board, limits_for(mate_in));
         let elapsed = start.elapsed().as_secs_f64();
         out.seconds += elapsed;
+        if elapsed >= PER_POSITION_CAP_S as f64 {
+            out.capped += 1;
+        }
         match result {
             Some(r) => {
                 out.nodes += r.nodes;
@@ -54,8 +61,8 @@ fn run(label: &str, limits_for: impl Fn(u8) -> SearchLimits, budget_s: f64) -> O
         }
     }
     println!(
-        "{label:38} {}/{} solved   {:>12} nodes  {:>8.2}s",
-        out.solved, out.total, fmt(out.nodes), out.seconds
+        "{label:38} {:>2}/{} solved  {:>13} nodes  {:>8.2}s  {} hit the {PER_POSITION_CAP_S}s cap",
+        out.solved, out.total, fmt(out.nodes), out.seconds, out.capped
     );
     out
 }
@@ -74,7 +81,7 @@ fn fmt(n: u64) -> String {
 
 fn main() {
     let sweep = std::env::args().any(|a| a == "--sweep");
-    let budget = 120.0;
+    let budget = 400.0;
 
     println!("Tactical suite: {} machine-verified mate positions\n", MATE_SUITE.len());
 
@@ -121,7 +128,18 @@ fn main() {
 
     let mut all = Vec::new();
     for (label, base) in configs {
-        let outcome = run(&label, |mate_in| SearchLimits { depth: 2 * mate_in, ..base }, budget);
+        // Per-position wall-clock cap. A capped search still returns its best move so far,
+        // which is then checked like any other answer -- a timeout counts as unsolved
+        // only if that move does not actually force mate.
+        let outcome = run(
+            &label,
+            |mate_in| SearchLimits {
+                depth: 2 * mate_in,
+                time: Some(Duration::from_secs(PER_POSITION_CAP_S)),
+                ..base
+            },
+            budget,
+        );
         all.push((label, outcome));
     }
 
