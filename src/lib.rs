@@ -1028,9 +1028,23 @@ impl Searcher {
         let original_alpha = alpha;
         let mut best = None;
         let mut score = -INF;
-        for m in self.ordered(board, tt.and_then(|e| e.best), true) {
+        for (index, m) in self.ordered(board, tt.and_then(|e| e.best), true).into_iter().enumerate() {
             let child = board.make_move_new(m);
-            let value = self.search_child(board, m, &child, depth - 1, alpha, beta, ply + 1);
+            // Principal variation search: with good ordering the first move is usually
+            // best, so later moves only need to be *refuted*. A null-window scout at
+            // (alpha, alpha + 1) is enough to show a move is no better, and only a move
+            // that beats alpha is re-searched with the full window to get its true
+            // value. Score-preserving: see `shallow_search_score_equals_plain_minimax`.
+            let value = if index == 0 {
+                self.search_child(board, m, &child, depth - 1, alpha, beta, ply + 1)
+            } else {
+                let scout = self.search_child(board, m, &child, depth - 1, alpha, alpha + 1, ply + 1);
+                if scout > alpha && scout < beta && !self.stopped {
+                    self.search_child(board, m, &child, depth - 1, alpha, beta, ply + 1)
+                } else {
+                    scout
+                }
+            };
             if self.stopped {
                 return 0;
             }
