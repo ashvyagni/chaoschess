@@ -1,0 +1,119 @@
+{
+  "label": "baseline",
+  "date": "2026-09-26",
+  "commit": "b091ae7",
+  "config": {
+    "style": "Classical",
+    "threads": 1,
+    "hash_mb": 16,
+    "max_depth": 3,
+    "timeout_s": 45.0
+  },
+  "machine": {
+    "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.14.6"
+  },
+  "positions": {
+    "startpos": {
+      "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+      "depths": [
+        {
+          "depth": 1,
+          "nodes": 50,
+          "seconds": 0.0093,
+          "nps": 5349,
+          "score_cp": 45,
+          "best_move": "b1c3",
+          "child_peak_rss_mb": 17.9
+        },
+        {
+          "depth": 2,
+          "nodes": 1066,
+          "seconds": 0.009,
+          "nps": 118918,
+          "score_cp": 0,
+          "best_move": "b1c3",
+          "child_peak_rss_mb": 18.1
+        },
+        {
+          "depth": 3,
+          "nodes": 10302,
+          "seconds": 0.02,
+          "nps": 515818,
+          "score_cp": 45,
+          "best_move": "b1c3",
+          "child_peak_rss_mb": 18.5
+        }
+      ]
+    },
+    "kiwipete": {
+      "fen": "r3k2r/p1ppqpb1/bn2pnp1/2pP4/1p2P3/2N2N2/PPPQBPPP/R3K2R w KQkq - 0 1",
+      "depths": [
+        {
+          "depth": 1,
+          "timed_out_after_s": 45.0
+        }
+      ]
+    },
+    "open-middlegame": {
+      "fen": "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1",
+      "depths": [
+        {
+          "depth": 1,
+          "timed_out_after_s": 45.0
+        }
+      ]
+    },
+    "rook-endgame": {
+      "fen": "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+      "depths": [
+        {
+          "depth": 1,
+          "nodes": 88,
+          "seconds": 0.0218,
+          "nps": 4029,
+          "score_cp": -10,
+          "best_move": "e2e4",
+          "child_peak_rss_mb": 18.8
+        },
+        {
+          "depth": 2,
+          "timed_out_after_s": 45.0
+        }
+      ]
+    },
+    "pawn-endgame": {
+      "fen": "8/8/4k3/8/8/4K3/4P3/8 w - - 0 1",
+      "depths": [
+        {
+          "depth": 1,
+          "nodes": 16,
+          "seconds": 0.0133,
+          "nps": 1207,
+          "score_cp": 140,
+          "best_move": "e3f2",
+          "child_peak_rss_mb": 18.8
+        },
+        {
+          "depth": 2,
+          "nodes": 63,
+          "seconds": 0.0073,
+          "nps": 8631,
+          "score_cp": 111,
+          "best_move": "e3d2",
+          "child_peak_rss_mb": 18.8
+        },
+        {
+          "depth": 3,
+          "nodes": 301,
+          "seconds": 0.0077,
+          "nps": 39286,
+          "score_cp": 134,
+          "best_move": "e3f2",
+          "child_peak_rss_mb": 18.8
+        }
+      ]
+    }
+  }
+}
