@@ -97,6 +97,76 @@ pub struct SearchInfo {
     pub hashfull: u32,
 }
 
+/// A position to search from, with the game history the draw rules need.
+///
+/// The `chess` crate's `Board` has no halfmove clock and no memory of earlier positions,
+/// so on its own it cannot see threefold repetition or the fifty-move rule. The audited
+/// engine searched bare boards and had neither (MASTER_ENGINE_AUDIT.md §G.7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Position {
+    pub board: Board,
+    /// Zobrist hashes of earlier positions since the last irreversible move, oldest first.
+    /// Older positions cannot recur, so they are not kept.
+    pub prior: Vec<u64>,
+    /// Plies since the last capture or pawn move.
+    pub halfmove_clock: u32,
+}
+
+impl Position {
+    pub fn new(board: Board) -> Self {
+        Self {
+            board,
+            prior: Vec::new(),
+            halfmove_clock: 0,
+        }
+    }
+
+    pub fn with_clock(board: Board, halfmove_clock: u32) -> Self {
+        Self {
+            board,
+            prior: Vec::new(),
+            halfmove_clock,
+        }
+    }
+
+    /// Play a move that is already known to be legal.
+    pub fn play(&mut self, m: ChessMove) {
+        if resets_clock(&self.board, m) {
+            self.prior.clear();
+            self.halfmove_clock = 0;
+        } else {
+            self.prior.push(self.board.get_hash());
+            self.halfmove_clock += 1;
+        }
+        self.board = self.board.make_move_new(m);
+    }
+}
+
+/// Captures and pawn moves are irreversible: they reset the fifty-move clock, and no
+/// position before them can ever recur.
+fn resets_clock(board: &Board, m: ChessMove) -> bool {
+    board.piece_on(m.get_source()) == Some(Piece::Pawn) || is_capture(board, m)
+}
+
+/// Neither side can possibly checkmate: bare kings, a single minor piece, or only bishops
+/// that all stand on squares of one colour. (Two knights against a bare king cannot force
+/// mate, but a mate is still *possible*, so by the rules it is not a dead position.)
+pub fn insufficient_material(board: &Board) -> bool {
+    let heavy = *board.pieces(Piece::Pawn) | *board.pieces(Piece::Rook) | *board.pieces(Piece::Queen);
+    if heavy != chess::EMPTY {
+        return false;
+    }
+    let knights = *board.pieces(Piece::Knight);
+    let bishops = *board.pieces(Piece::Bishop);
+    let minors = (knights | bishops).popcnt();
+    if minors <= 1 {
+        return true;
+    }
+    const LIGHT_SQUARES: u64 = 0x55AA_55AA_55AA_55AA;
+    let on_light = (bishops & BitBoard::new(LIGHT_SQUARES)).popcnt();
+    knights == chess::EMPTY && (on_light == 0 || on_light == bishops.popcnt())
+}
+
 /// Convert a search score into UCI "mate N" form: positive N means the side to move mates
 /// in N moves, negative N means it is mated in N moves. `None` for ordinary scores.
 pub fn mate_in_moves(score: i32) -> Option<i32> {
@@ -655,6 +725,11 @@ struct Searcher {
     /// Triangular PV table: `pv[ply]` is the best line found from `ply` in the current node.
     pv: Vec<Vec<ChessMove>>,
     seldepth: u8,
+    /// Hashes of every position from the oldest reversible game position to the current
+    /// node, inclusive. Used for repetition detection.
+    path: Vec<u64>,
+    /// Halfmove clock of each node from the root to the current node.
+    clocks: Vec<u32>,
 }
 
 impl Searcher {
@@ -675,7 +750,78 @@ impl Searcher {
             can_abort: false,
             pv: vec![Vec::new(); PV_ROWS],
             seldepth: 0,
+            path: Vec::new(),
+            clocks: vec![0],
         }
+    }
+
+    /// Reset the path to a root position and its game history.
+    fn set_root(&mut self, root: &Position) {
+        self.path.clear();
+        self.path.extend_from_slice(&root.prior);
+        self.path.push(root.board.get_hash());
+        self.clocks.clear();
+        self.clocks.push(root.halfmove_clock);
+    }
+
+    /// Search `child` (the result of `m` played in `parent`) and return its score from
+    /// the parent's point of view. This is the only way the main search descends a ply,
+    /// so the repetition path and the halfmove clocks cannot drift out of step.
+    #[allow(clippy::too_many_arguments)]
+    fn search_child(
+        &mut self,
+        parent: &Board,
+        m: ChessMove,
+        child: &Board,
+        depth: u8,
+        alpha: i32,
+        beta: i32,
+        ply: u8,
+    ) -> i32 {
+        let clock = if resets_clock(parent, m) {
+            0
+        } else {
+            self.clocks.last().copied().unwrap_or(0) + 1
+        };
+        self.path.push(child.get_hash());
+        self.clocks.push(clock);
+        let value = -self.negamax(child, depth, -beta, -alpha, ply);
+        self.path.pop();
+        self.clocks.pop();
+        value
+    }
+
+    /// Whether the current node (the last entry of `path`) is a draw by repetition.
+    ///
+    /// A position that recurs *inside the search* counts as a draw on its first
+    /// repetition: if a side can repeat once, it can repeat again, and treating it as a
+    /// draw sooner saves search. A position whose earlier occurrences are all in the game
+    /// history before the root needs two of them, since that is what makes a real
+    /// threefold repetition.
+    fn is_repetition(&self, ply: u8) -> bool {
+        let n = self.path.len();
+        let Some(&current) = self.path.last() else {
+            return false;
+        };
+        let clock = self.clocks.last().copied().unwrap_or(0) as usize;
+        let reach = clock.min(n - 1);
+        let mut earlier = 0;
+        // The same side is to move only every other ply, and a position cannot recur
+        // after just two plies, so the scan starts four plies back.
+        let mut back = 4;
+        while back <= reach {
+            if self.path[n - 1 - back] == current {
+                if back <= usize::from(ply) {
+                    return true;
+                }
+                earlier += 1;
+                if earlier >= 2 {
+                    return true;
+                }
+            }
+            back += 2;
+        }
+        false
     }
 
     fn stop(&mut self) {
@@ -766,6 +912,12 @@ impl Searcher {
             return if in_check { -MATE + i32::from(ply) } else { 0 };
         }
 
+        // A capture sequence can strip the board down to a dead position; its static
+        // evaluation would still show a material edge that can never become a win.
+        if insufficient_material(board) {
+            return 0;
+        }
+
         if qs_ply >= MAX_QUIESCENCE_PLY {
             return evaluate_with_style(board, self.limits.style);
         }
@@ -837,6 +989,15 @@ impl Searcher {
             BoardStatus::Stalemate => return 0,
             BoardStatus::Ongoing => {}
         }
+        // Draw rules come after the mate test: a checkmate delivered on the hundredth
+        // halfmove is still checkmate. They also come before the transposition table,
+        // because a draw depends on how the position was reached, not only on the position.
+        if self.clocks.last().is_some_and(|&c| c >= 100)
+            || self.is_repetition(ply)
+            || insufficient_material(board)
+        {
+            return 0;
+        }
         if depth == 0 {
             return self.quiescence(board, alpha, beta, ply, 0);
         }
@@ -855,7 +1016,8 @@ impl Searcher {
         let mut best = None;
         let mut score = -INF;
         for m in self.ordered(board, tt.and_then(|e| e.best), true) {
-            let value = -self.negamax(&board.make_move_new(m), depth - 1, -beta, -alpha, ply + 1);
+            let child = board.make_move_new(m);
+            let value = self.search_child(board, m, &child, depth - 1, alpha, beta, ply + 1);
             if self.stopped {
                 return 0;
             }
@@ -931,11 +1093,11 @@ fn search_root(
     for (index, m) in moves.into_iter().enumerate() {
         let child = board.make_move_new(m);
         let value = if index == 0 {
-            -searcher.negamax(&child, child_depth, -beta, -alpha, 1)
+            searcher.search_child(board, m, &child, child_depth, alpha, beta, 1)
         } else {
-            let scout = -searcher.negamax(&child, child_depth, -alpha - 1, -alpha, 1);
+            let scout = searcher.search_child(board, m, &child, child_depth, alpha, alpha + 1, 1);
             if scout > alpha && scout < beta && !searcher.stopped {
-                -searcher.negamax(&child, child_depth, -beta, -alpha, 1)
+                searcher.search_child(board, m, &child, child_depth, alpha, beta, 1)
             } else {
                 scout
             }
@@ -998,8 +1160,22 @@ impl Engine {
         stop: Arc<AtomicBool>,
         on_info: &mut dyn FnMut(&SearchInfo),
     ) -> Option<SearchResult> {
+        self.search_position(&Position::new(*board), limits, stop, on_info)
+    }
+
+    /// Search a position together with its game history, so repetitions and the
+    /// fifty-move rule are seen. This is what UCI uses.
+    pub fn search_position(
+        &mut self,
+        root: &Position,
+        limits: SearchLimits,
+        stop: Arc<AtomicBool>,
+        on_info: &mut dyn FnMut(&SearchInfo),
+    ) -> Option<SearchResult> {
+        let board = &root.board;
         let table = std::mem::replace(&mut self.table, Table::placeholder());
         let mut searcher = Searcher::with_table(limits, table, stop);
+        searcher.set_root(root);
         let result = iterate(&mut searcher, board, limits, on_info);
         self.table = std::mem::replace(&mut searcher.table, Table::placeholder());
         result
@@ -1498,6 +1674,125 @@ mod tests {
         engine.clear();
         let cleared = engine.search(&board, limits, no_stop(), &mut |_| {}).unwrap();
         assert_eq!(cleared.nodes, cold.nodes, "clear() must restore cold behaviour");
+    }
+
+    #[test]
+    fn insufficient_material_follows_the_rules() {
+        let dead = [
+            ("8/8/8/4k3/8/8/8/4K3 w - - 0 1", "bare kings"),
+            ("8/8/8/4k3/8/8/8/2B1K3 w - - 0 1", "king and bishop"),
+            ("8/8/8/4k3/8/8/8/1N2K3 w - - 0 1", "king and knight"),
+            ("5b2/8/8/4k3/8/8/8/2B1K3 w - - 0 1", "bishops on the same colour"),
+        ];
+        let alive = [
+            ("8/8/8/4k3/8/8/8/1N2KN2 w - - 0 1", "two knights: mate is possible"),
+            ("2b5/8/8/4k3/8/8/8/2B1K3 w - - 0 1", "bishops on opposite colours"),
+            ("8/8/8/4k3/8/8/8/R3K3 w - - 0 1", "rook"),
+            ("8/8/8/4k3/8/8/4P3/4K3 w - - 0 1", "pawn"),
+            ("8/8/8/4k3/8/8/8/1NB1K3 w - - 0 1", "knight and bishop"),
+        ];
+        for (fen, why) in dead {
+            assert!(insufficient_material(&Board::from_str(fen).unwrap()), "{why}");
+        }
+        for (fen, why) in alive {
+            assert!(!insufficient_material(&Board::from_str(fen).unwrap()), "{why}");
+        }
+    }
+
+    #[test]
+    fn a_dead_position_searches_as_a_draw() {
+        let board = Board::from_str("8/8/8/4k3/8/8/8/2B1K3 w - - 0 1").unwrap();
+        let result = search(&board, SearchLimits { depth: 4, ..Default::default() }).unwrap();
+        assert_eq!(result.score, 0, "an extra bishop cannot win");
+    }
+
+    /// The repetition rule, on hand-built paths so each branch is pinned exactly.
+    #[test]
+    fn repetition_rule_distinguishes_search_from_history() {
+        let mut s = Searcher::new(SearchLimits::default());
+        let (a, b, c, d) = (1u64, 2, 3, 4);
+
+        // The current position A also stands 4 plies back.
+        s.path = vec![a, b, c, d, a];
+        s.clocks = vec![4];
+        assert!(s.is_repetition(4), "earlier occurrence inside the search: a draw at once");
+        assert!(!s.is_repetition(1), "one earlier occurrence in game history: only twofold");
+
+        // Two earlier occurrences in the game history make threefold.
+        s.path = vec![a, b, c, d, a, b, c, d, a];
+        s.clocks = vec![8];
+        assert!(s.is_repetition(1));
+
+        // A capture or pawn move in between (small clock) hides the old occurrences.
+        s.clocks = vec![3];
+        assert!(!s.is_repetition(1), "positions before an irreversible move cannot recur");
+
+        // Occurrences with the other side to move never count.
+        s.path = vec![a, b, c, a, d];
+        s.clocks = vec![4];
+        assert!(!s.is_repetition(4));
+    }
+
+    /// Black is a queen down, but the game history lets Black claim threefold repetition
+    /// by returning the knight. With the history, the engine finds the draw. Without it,
+    /// the same move looks as lost as every other.
+    #[test]
+    fn engine_uses_game_history_to_find_threefold_repetition() {
+        let start =
+            Board::from_str("rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
+        let mut position = Position::new(start);
+        for text in ["g1f3", "g8f6", "f3g1", "f6g8", "g1f3", "g8f6", "f3g1"] {
+            let m = parse_move(&position.board, text).unwrap();
+            position.play(m);
+        }
+        let limits = SearchLimits { depth: 4, ..Default::default() };
+        let no_stop = || Arc::new(AtomicBool::new(false));
+
+        let with_history = Engine::new(16)
+            .search_position(&position, limits, no_stop(), &mut |_| {})
+            .unwrap();
+        assert_eq!(with_history.best_move.to_string(), "f6g8");
+        assert_eq!(with_history.score, 0, "threefold repetition is a draw");
+
+        let bare = Engine::new(16)
+            .search_position(&Position::new(position.board), limits, no_stop(), &mut |_| {})
+            .unwrap();
+        assert!(bare.score < -500, "without history Black is simply a queen down: {}", bare.score);
+    }
+
+    /// With the clock at 99, any move that is not a capture or pawn move ends the game in
+    /// a draw. The side that is winning must push the pawn.
+    #[test]
+    fn fifty_move_rule_makes_the_winning_side_reset_the_clock() {
+        let board = Board::from_str("4k3/8/8/8/8/8/P7/R3K3 w - - 99 80").unwrap();
+        let result = Engine::new(16)
+            .search_position(
+                &Position::with_clock(board, 99),
+                SearchLimits { depth: 3, ..Default::default() },
+                Arc::new(AtomicBool::new(false)),
+                &mut |_| {},
+            )
+            .unwrap();
+        let pawn_move = board.piece_on(result.best_move.get_source()) == Some(Piece::Pawn);
+        assert!(pawn_move, "played {} and drew by the fifty-move rule", result.best_move);
+        assert!(result.score > 300, "{}", result.score);
+    }
+
+    /// Checkmate takes precedence over the fifty-move rule when both happen on the same
+    /// move.
+    #[test]
+    fn mate_on_the_hundredth_halfmove_is_still_mate() {
+        let board = Board::from_str("7k/5Q2/6K1/8/8/8/8/8 w - - 99 80").unwrap();
+        let result = Engine::new(16)
+            .search_position(
+                &Position::with_clock(board, 99),
+                SearchLimits { depth: 2, ..Default::default() },
+                Arc::new(AtomicBool::new(false)),
+                &mut |_| {},
+            )
+            .unwrap();
+        assert_eq!(result.best_move.to_string(), "f7g7");
+        assert_eq!(mate_in_moves(result.score), Some(1));
     }
 
     #[test]

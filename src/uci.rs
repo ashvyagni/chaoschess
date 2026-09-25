@@ -9,7 +9,9 @@
 //! worker for the search and comes back through the join handle. No locks.
 
 use crate::time::{allocate, Clock};
-use crate::{mate_in_moves, parse_move, perft, search, Engine, SearchInfo, SearchLimits, Style};
+use crate::{
+    mate_in_moves, parse_move, perft, search, Engine, Position, SearchInfo, SearchLimits, Style,
+};
 use crate::{MAX_DEPTH, STARTPOS};
 use chess::{Board, Color};
 use std::io::{self, BufRead, Write};
@@ -40,7 +42,9 @@ pub fn run() {
 }
 
 struct Session {
-    board: Board,
+    /// The current position with its game history, so the search sees repetitions and
+    /// the fifty-move rule.
+    position: Position,
     /// Options that persist between `go` commands: style, threads, quiescence knobs.
     template: SearchLimits,
     hash_mb: usize,
@@ -54,7 +58,7 @@ struct Session {
 impl Session {
     fn new() -> Self {
         Self {
-            board: Board::default(),
+            position: Position::new(Board::default()),
             template: SearchLimits {
                 hash_mb: DEFAULT_HASH_MB,
                 ..SearchLimits::default()
@@ -93,13 +97,13 @@ impl Session {
             "isready" => println!("readyok"),
             "ucinewgame" => {
                 self.idle_engine().clear();
-                self.board = Board::default();
+                self.position = Position::new(Board::default());
             }
             "setoption" => self.set_option(args),
             "position" => {
                 self.stop_search();
                 match parse_position(args) {
-                    Ok(board) => self.board = board,
+                    Ok(position) => self.position = position,
                     Err(error) => println!("info string position rejected: {error}"),
                 }
             }
@@ -110,7 +114,7 @@ impl Session {
             "perft" => {
                 self.stop_search();
                 let depth = args.first().and_then(|v| v.parse().ok()).unwrap_or(1);
-                println!("nodes {}", perft(&self.board, depth));
+                println!("nodes {}", perft(&self.position.board, depth));
             }
             "bench" => {
                 self.stop_search();
@@ -122,14 +126,19 @@ impl Session {
                     hash_mb: self.hash_mb,
                     ..self.template
                 };
-                if let Some(result) = search(&self.board, limits) {
+                if let Some(result) = search(&self.position.board, limits) {
                     println!(
                         "bench depth {} nodes {} score cp {} bestmove {}",
                         result.depth, result.nodes, result.score, result.best_move
                     );
                 }
             }
-            "d" => println!("{}", self.board),
+            "d" => println!(
+                "{}\nhalfmove clock {}, {} earlier reversible position(s)",
+                self.position.board,
+                self.position.halfmove_clock,
+                self.position.prior.len()
+            ),
             _ => println!("info string unknown command: {command}"),
         }
         true
@@ -185,16 +194,16 @@ impl Session {
     fn go(&mut self, args: &[&str]) {
         self.stop_search();
         let params = GoParams::parse(args);
-        let limits = params.limits(self.template, self.board.side_to_move(), self.overhead);
+        let limits = params.limits(self.template, self.position.board.side_to_move(), self.overhead);
         let infinite = params.infinite;
 
         let mut engine = self.engine.take().expect("engine is idle after stop_search");
-        let board = self.board;
+        let position = self.position.clone();
         let stop = Arc::new(AtomicBool::new(false));
         self.stop = Arc::clone(&stop);
 
         self.worker = Some(thread::spawn(move || {
-            let result = engine.search(&board, limits, Arc::clone(&stop), &mut print_info);
+            let result = engine.search_position(&position, limits, Arc::clone(&stop), &mut print_info);
             if infinite {
                 // UCI: under `go infinite`, bestmove must not be sent before `stop`, even
                 // if the search has run out of depth.
@@ -247,16 +256,18 @@ fn print_info(info: &SearchInfo) {
     let _ = io::stdout().flush();
 }
 
-/// Parse `position startpos|fen <fields> [moves ...]` into a board.
+/// Parse `position startpos|fen <fields> [moves ...]` into a position with its history.
 ///
 /// Builds a fresh board and returns it only on full success, so a bad command leaves the
 /// current position untouched. The baseline applied moves in place and could stop
 /// halfway on an illegal move.
-fn parse_position(args: &[&str]) -> Result<Board, String> {
+fn parse_position(args: &[&str]) -> Result<Position, String> {
     let moves_at = args.iter().position(|&t| t == "moves").unwrap_or(args.len());
     let (setup, moves) = args.split_at(moves_at);
-    let mut board = match setup.split_first() {
-        Some((&"startpos", _)) => Board::from_str(STARTPOS).expect("start position is valid"),
+    let mut position = match setup.split_first() {
+        Some((&"startpos", _)) => {
+            Position::new(Board::from_str(STARTPOS).expect("start position is valid"))
+        }
         Some((&"fen", fields)) => {
             if fields.len() < 4 {
                 return Err(format!("FEN needs at least 4 fields, got {}", fields.len()));
@@ -269,16 +280,22 @@ fn parse_position(args: &[&str]) -> Result<Board, String> {
             if fen.len() == 5 {
                 fen.push("1");
             }
-            Board::from_str(&fen.join(" ")).map_err(|e| format!("invalid FEN: {e:?}"))?
+            let board =
+                Board::from_str(&fen.join(" ")).map_err(|e| format!("invalid FEN: {e:?}"))?;
+            // The crate's Board discards the halfmove clock, so it is read here.
+            let clock = fen[4]
+                .parse::<u32>()
+                .map_err(|_| format!("invalid halfmove clock {:?}", fen[4]))?;
+            Position::with_clock(board, clock)
         }
         Some((other, _)) => return Err(format!("unknown position source {other}")),
         None => return Err("missing position source".to_string()),
     };
     for text in moves.iter().skip(1) {
-        let m = parse_move(&board, text)?;
-        board = board.make_move_new(m);
+        let m = parse_move(&position.board, text)?;
+        position.play(m);
     }
-    Ok(board)
+    Ok(position)
 }
 
 /// The arguments of one `go` command.
@@ -393,10 +410,26 @@ mod tests {
     #[test]
     fn position_accepts_short_fens_and_rejects_bad_moves_atomically() {
         let b = parse_position(&["fen", "4k3/8/8/8/8/8/4P3/4K3", "w", "-", "-"]).unwrap();
-        assert_eq!(b.side_to_move(), Color::White);
+        assert_eq!(b.board.side_to_move(), Color::White);
         let moved = parse_position(&["startpos", "moves", "e2e4", "e7e5"]).unwrap();
-        assert_ne!(moved, Board::default());
+        assert_ne!(moved.board, Board::default());
         assert!(parse_position(&["startpos", "moves", "e2e4", "e2e4"]).is_err());
         assert!(parse_position(&["fen", "8/8/8"]).is_err());
+    }
+
+    #[test]
+    fn position_tracks_the_halfmove_clock_and_history() {
+        let p = parse_position(&["fen", "4k3/8/8/8/8/8/4P3/4K3", "w", "-", "-", "37", "60"]).unwrap();
+        assert_eq!(p.halfmove_clock, 37);
+        // Four reversible knight moves: the clock counts them and all four earlier
+        // positions are kept for repetition detection.
+        let p = parse_position(&["startpos", "moves", "g1f3", "g8f6", "f3g1", "f6g8"]).unwrap();
+        assert_eq!(p.halfmove_clock, 4);
+        assert_eq!(p.prior.len(), 4);
+        assert_eq!(p.prior[0], p.board.get_hash(), "back at the start position");
+        // A pawn move is irreversible: the clock resets and older positions are dropped.
+        let p = parse_position(&["startpos", "moves", "g1f3", "g8f6", "e2e4"]).unwrap();
+        assert_eq!(p.halfmove_clock, 0);
+        assert!(p.prior.is_empty());
     }
 }
