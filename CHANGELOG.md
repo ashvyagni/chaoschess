@@ -8,6 +8,50 @@ Some milestones landed in commits made by the project owner with short messages.
 detailed descriptions are kept here, so the history stays explainable without rewriting
 published commits.
 
+## Roadmap item 3 — correctness floor (`7ac85ed` … `cf4ab83`)
+
+**GUI rules (`7ac85ed`).** `moves.py`, which decides what a human may play in the GUI,
+had **seven** bugs. The audit found four; re-reading found two more, and the new
+differential tester found the seventh:
+
+1. the legality filter tested the wrong king;
+2. castling masks were swapped between colours;
+3. en passant left the captured pawn on the board;
+4. knight promotion made a pawn;
+5. knights had only 4 of their 8 jumps;
+6. Black captures used the wrong source square;
+7. pawns could double-push from any rank.
+
+`tools/diff_movegen.py` compares Python's legal moves with a Rust oracle at every node.
+All published perft counts now match to depth 4.
+
+**Draw rules (`486d94b`, `77a86ee`).** The engine now sees threefold repetition, the
+fifty-move rule and insufficient material through `Position` (board + reversible history +
+halfmove clock). Checkmate still takes precedence on the hundredth halfmove. The GUI sends
+the full move list and ends games with a named reason. Cost: none measurable.
+
+**Fuzzing (`cf4ab83`).** Deterministic random games and hostile UCI input found:
+
+- undefined behaviour in the `chess` crate (a FEN whose side to move has no king);
+- a crate panic on bad king counts;
+- silent acceptance of nonsense FENs;
+- a crash in `parse_move` on multi-byte input.
+
+`src/fen.rs` now validates every FEN before the crate sees it.
+
+**GUI environment.** iCloud-synced `~/Documents` marks `.venv` contents hidden, and Qt
+then cannot load its plugins. The GUI now detects this and explains the fix instead of
+aborting with Qt's opaque error.
+
+**Corrections to earlier work.**
+
+- The audit gained an Errata section: an invalid example in §G.1, a FEN mislabelled as
+  kiwipete, and the three missed defects.
+- Several of my own test expectations were wrong and were caught before commit: two
+  castling positions, one "mate" that was not mate, and a fuzz-test synchronisation bug.
+
+Tests: 50 Rust, 20 Python.
+
 ## Roadmap item 2 — UCI: clock, stop, PV, mate scores (`930e2b2`)
 
 **Why:** the engine could not play a timed game, so matches, SPRT and Elo were all
