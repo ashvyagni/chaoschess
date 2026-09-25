@@ -1,12 +1,29 @@
-use chess::{Board, BoardStatus, ChessMove, Color, File, MoveGen, Piece, Rank, Square};
+use chess::{
+    get_bishop_moves, get_king_moves, get_knight_moves, get_pawn_attacks, get_rook_moves,
+    BitBoard, Board, BoardStatus, ChessMove, Color, File, MoveGen, Piece, Rank, Square,
+};
 use std::thread;
 use std::time::{Duration, Instant};
+
+pub mod suites;
 
 pub const STARTPOS: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const INF: i32 = 32_000;
 const MATE: i32 = 30_000;
-const MAX_QUIESCENCE_PLY: u8 = 32;
+pub const MAX_QUIESCENCE_PLY: u8 = 32;
 const PIECE_VALUES: [i32; 6] = [100, 320, 330, 500, 900, 20_000];
+
+/// How many plies into the quiescence search non-capturing checks are still
+/// searched. Searching quiet checks is valuable -- it finds short forced mates that a
+/// captures-only quiescence walks straight past -- but it must be bounded, because quiet
+/// checks generate further quiet checks. Leaving it unbounded is what made the audited
+/// baseline unable to finish a one-ply search in a middlegame position; see
+/// `experiments/E1-quiescence-quiet-checks.md`.
+pub const QS_CHECK_PLIES: u8 = 2;
+
+/// Piece values used by static exchange evaluation. The king is given a value larger
+/// than any possible exchange so a king capture can never look profitable.
+const SEE_VALUES: [i32; 6] = [100, 320, 330, 500, 900, 100_000];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Style {
@@ -23,6 +40,15 @@ pub struct SearchLimits {
     pub hash_mb: usize,
     pub style: Style,
     pub threads: usize,
+    /// Plies into quiescence for which non-capturing checks are still searched.
+    ///
+    /// Exposed rather than hard-coded so the tradeoff can be *measured* instead of
+    /// assumed: raising it buys tactical sight and costs nodes exponentially. Setting it
+    /// to [`MAX_QUIESCENCE_PLY`] reproduces the unbounded behaviour of the audited
+    /// baseline, which is how the two are compared.
+    pub qs_check_plies: u8,
+    /// Prune captures that static exchange evaluation scores as losing material.
+    pub qs_see_pruning: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +68,8 @@ impl Default for SearchLimits {
             hash_mb: 16,
             style: Style::Classical,
             threads: 1,
+            qs_check_plies: QS_CHECK_PLIES,
+            qs_see_pruning: true,
         }
     }
 }
@@ -90,6 +118,49 @@ pub fn perft(board: &Board, depth: u8) -> u64 {
     MoveGen::new_legal(board)
         .map(|m| perft(&board.make_move_new(m), depth - 1))
         .sum()
+}
+
+/// Exhaustively prove that the side to move can force mate within `moves` moves, and
+/// return a move that does so.
+///
+/// This is deliberately a brute-force prover with **no pruning, no evaluation and no
+/// transposition table**, so its answer does not depend on any of the heuristics under
+/// test. That is the point: it is used to validate the expected answers in the tactical
+/// suite, so the suite cannot be "passed" by an engine bug that the prover shares.
+///
+/// Cost is exponential in `moves`; it is practical to about `moves == 3`.
+pub fn prove_forced_mate(board: &Board, moves: u8) -> Option<ChessMove> {
+    if moves == 0 {
+        return None;
+    }
+    MoveGen::new_legal(board).find(|m| is_mated_within(&board.make_move_new(*m), moves))
+}
+
+/// True when the side to move is mated within `moves` moves, the opponent having just
+/// moved. Every defence must lose, hence `all`.
+fn is_mated_within(board: &Board, moves: u8) -> bool {
+    match board.status() {
+        BoardStatus::Checkmate => true,
+        BoardStatus::Stalemate => false,
+        BoardStatus::Ongoing => {
+            if moves <= 1 {
+                return false;
+            }
+            MoveGen::new_legal(board)
+                .all(|d| prove_forced_mate(&board.make_move_new(d), moves - 1).is_some())
+        }
+    }
+}
+
+/// True when playing `m` forces mate within `moves` moves.
+pub fn move_forces_mate(board: &Board, m: ChessMove, moves: u8) -> bool {
+    MoveGen::new_legal(board).any(|legal| legal == m)
+        && is_mated_within(&board.make_move_new(m), moves)
+}
+
+/// The shortest forced mate for the side to move, up to `limit` moves, or `None`.
+pub fn shortest_forced_mate(board: &Board, limit: u8) -> Option<(u8, ChessMove)> {
+    (1..=limit).find_map(|n| prove_forced_mate(board, n).map(|m| (n, m)))
 }
 
 pub fn evaluate(board: &Board) -> i32 {
@@ -261,6 +332,141 @@ fn center_control(board: &Board) -> i32 {
         .sum()
 }
 
+/// True when `m` is an en passant capture.
+///
+/// Note the `chess` crate stores the square of the *capturable pawn* in `en_passant()`,
+/// not the square the capturing pawn moves to, so the destination has to be stepped back
+/// one rank before comparing. Getting this backwards silently classifies every en passant
+/// capture as a quiet move.
+fn is_en_passant(board: &Board, m: ChessMove) -> bool {
+    board.piece_on(m.get_source()) == Some(Piece::Pawn)
+        && board.piece_on(m.get_dest()).is_none()
+        && board.en_passant() == Some(m.get_dest().ubackward(board.side_to_move()))
+}
+
+/// True when `m` removes an enemy piece from the board, including en passant, where the
+/// captured pawn is not on the destination square.
+fn is_capture(board: &Board, m: ChessMove) -> bool {
+    board.piece_on(m.get_dest()).is_some() || is_en_passant(board, m)
+}
+
+/// Every piece of either colour that attacks `square`, given an arbitrary occupancy.
+///
+/// Passing a modified `occupied` is what makes x-ray recomputation work in [`see`]: once
+/// an attacker is removed, a slider behind it becomes an attacker in the next iteration.
+fn attackers_to(board: &Board, square: Square, occupied: BitBoard) -> BitBoard {
+    let pawns = *board.pieces(Piece::Pawn);
+    let white = *board.color_combined(Color::White);
+    let black = *board.color_combined(Color::Black);
+    let diagonal = *board.pieces(Piece::Bishop) | *board.pieces(Piece::Queen);
+    let straight = *board.pieces(Piece::Rook) | *board.pieces(Piece::Queen);
+
+    // A white pawn on `p` attacks `square` exactly when `p` is one of the squares a black
+    // pawn standing on `square` would attack, so the tables are probed with the colour
+    // inverted.
+    let mut attackers = get_pawn_attacks(square, Color::Black, pawns & white)
+        | get_pawn_attacks(square, Color::White, pawns & black)
+        | (get_knight_moves(square) & *board.pieces(Piece::Knight))
+        | (get_king_moves(square) & *board.pieces(Piece::King));
+    attackers |= get_bishop_moves(square, occupied) & diagonal;
+    attackers |= get_rook_moves(square, occupied) & straight;
+    attackers & occupied
+}
+
+/// The cheapest piece of `color` among `attackers`, as (piece, its square).
+fn least_valuable(board: &Board, attackers: BitBoard, color: Color) -> Option<(Piece, Square)> {
+    let mine = attackers & *board.color_combined(color);
+    for piece in [
+        Piece::Pawn,
+        Piece::Knight,
+        Piece::Bishop,
+        Piece::Rook,
+        Piece::Queen,
+        Piece::King,
+    ] {
+        let candidates = mine & *board.pieces(piece);
+        if candidates != chess::EMPTY {
+            return Some((piece, candidates.to_square()));
+        }
+    }
+    None
+}
+
+/// Static exchange evaluation: the material the side to move nets from playing `m` if
+/// both sides then recapture on that square with their cheapest piece until neither
+/// wants to continue.
+///
+/// This is a static estimate, not a search -- it ignores pins, intermediate tactics and
+/// the possibility that recapturing is simply bad. It exists to answer one cheap
+/// question: "is this capture obviously losing material?" A negative result means yes.
+fn see(board: &Board, m: ChessMove) -> i32 {
+    let target = m.get_dest();
+    let source = m.get_source();
+    let Some(mut attacker) = board.piece_on(source) else {
+        return 0;
+    };
+
+    let mut occupied = *board.combined();
+
+    // Value of the piece being captured on this first move.
+    let mut gain = [0i32; 32];
+    gain[0] = if is_en_passant(board, m) {
+        // The captured pawn sits behind the destination square; clear it from the
+        // occupancy so sliders through that square are seen correctly.
+        let captured = target.ubackward(board.side_to_move());
+        occupied &= !BitBoard::from_square(captured);
+        SEE_VALUES[Piece::Pawn.to_index()]
+    } else {
+        board
+            .piece_on(target)
+            .map_or(0, |p| SEE_VALUES[p.to_index()])
+    };
+
+    // A promotion arrives on the target square as the promoted piece, and the pawn's own
+    // value is replaced.
+    if let Some(promotion) = m.get_promotion() {
+        gain[0] += SEE_VALUES[promotion.to_index()] - SEE_VALUES[Piece::Pawn.to_index()];
+        attacker = promotion;
+    }
+
+    occupied &= !BitBoard::from_square(source);
+    let mut side = !board.side_to_move();
+    let mut depth = 0usize;
+
+    loop {
+        depth += 1;
+        if depth >= gain.len() {
+            break;
+        }
+        // If `side` recaptures, it wins the attacker standing on the target square but
+        // exposes its own recapturing piece.
+        gain[depth] = SEE_VALUES[attacker.to_index()] - gain[depth - 1];
+
+        let attackers = attackers_to(board, target, occupied);
+        let Some((next, from)) = least_valuable(board, attackers, side) else {
+            break;
+        };
+        // Recapturing with the king is only legal if the opponent has no attackers left;
+        // treating it as available anyway would over-value the exchange.
+        if next == Piece::King
+            && least_valuable(board, attackers_to(board, target, occupied), !side).is_some()
+        {
+            break;
+        }
+        occupied &= !BitBoard::from_square(from);
+        attacker = next;
+        side = !side;
+    }
+
+    // Walk back up the swap list: at each level the side to move can decline the
+    // recapture, so it takes the better of "stop here" and "continue".
+    while depth > 1 {
+        depth -= 1;
+        gain[depth - 1] = -(-gain[depth - 1]).max(gain[depth]);
+    }
+    gain[0]
+}
+
 #[derive(Clone, Copy)]
 struct Entry {
     key: u64,
@@ -311,62 +517,118 @@ impl Searcher {
         self.stopped |= self.limits.nodes.is_some_and(|n| self.nodes >= n);
         self.stopped |= self.limits.time.is_some_and(|t| self.start.elapsed() >= t);
     }
-    fn ordered(&self, board: &Board, tt: Option<ChessMove>) -> Vec<ChessMove> {
+    /// Legal moves, best-first.
+    ///
+    /// `check_bonus` controls whether checking moves are promoted in the ordering. It
+    /// costs a full board copy per move to find out, which is worth it in the main search
+    /// (where it buys cutoffs over a large subtree) and not worth it in quiescence (where
+    /// the subtree is shallow and the same information is recomputed immediately after).
+    fn ordered(&self, board: &Board, tt: Option<ChessMove>, check_bonus: bool) -> Vec<ChessMove> {
         let mut moves: Vec<_> = MoveGen::new_legal(board).collect();
         moves.sort_by_key(|m| {
-            let capture = board
+            // MVV-LVA: prefer taking the most valuable victim with the least valuable
+            // attacker.
+            let victim = board
                 .piece_on(m.get_dest())
                 .map_or(0, |p| PIECE_VALUES[p.to_index()]);
-            let victim = board
+            let attacker = board
                 .piece_on(m.get_source())
                 .map_or(1, |p| PIECE_VALUES[p.to_index()]);
             let tt_bonus = if Some(*m) == tt { 1_000_000 } else { 0 };
-            let check_bonus = if board.make_move_new(*m).checkers() == &chess::EMPTY {
-                0
-            } else {
+            let check = if check_bonus && board.make_move_new(*m).checkers() != &chess::EMPTY {
                 50_000
+            } else {
+                0
             };
-            -(tt_bonus + check_bonus + capture * 10 - victim
+            -(tt_bonus + check + victim * 10 - attacker
                 + self.history[m.get_source().to_index()][m.get_dest().to_index()])
         });
         moves
     }
-    fn quiescence(&mut self, board: &Board, mut alpha: i32, beta: i32, ply: u8) -> i32 {
+    /// Quiescence search: resolve the position until nothing forcing is left, so the
+    /// evaluation is not read in the middle of an exchange.
+    ///
+    /// `ply` is the absolute distance from the root and is only used for mate scoring.
+    /// `qs_ply` counts plies inside quiescence and bounds it.
+    fn quiescence(
+        &mut self,
+        board: &Board,
+        mut alpha: i32,
+        beta: i32,
+        ply: u8,
+        qs_ply: u8,
+    ) -> i32 {
         self.nodes += 1;
         self.stop();
         if self.stopped {
             return 0;
         }
-        if ply >= MAX_QUIESCENCE_PLY {
+
+        let in_check = board.checkers() != &chess::EMPTY;
+
+        // The move list doubles as terminal detection, so no separate status() call --
+        // which would cost a second full move generation -- is needed.
+        let moves = self.ordered(board, None, false);
+        if moves.is_empty() {
+            return if in_check { -MATE + i32::from(ply) } else { 0 };
+        }
+
+        if qs_ply >= MAX_QUIESCENCE_PLY {
             return evaluate_with_style(board, self.limits.style);
         }
-        if board.status() == BoardStatus::Checkmate {
-            return -MATE + i32::from(ply);
-        }
-        let in_check = board.checkers() != &chess::EMPTY;
-        let stand = evaluate_with_style(board, self.limits.style);
-        if !in_check && stand >= beta {
-            return stand;
-        }
-        if !in_check {
-            alpha = alpha.max(stand);
-        }
-        for m in self.ordered(board, None) {
-            let is_capture = board.piece_on(m.get_dest()).is_some() || m.get_promotion().is_some();
-            if !in_check && !is_capture && board.make_move_new(m).checkers() == &chess::EMPTY {
-                continue;
+
+        // Stand pat: the side to move is not obliged to capture, so the static score is a
+        // lower bound -- except in check, where every move must address the check.
+        let mut best = if in_check {
+            -INF
+        } else {
+            let stand = evaluate_with_style(board, self.limits.style);
+            if stand >= beta {
+                return stand;
             }
-            let score = -self.quiescence(&board.make_move_new(m), -beta, -alpha, ply + 1);
+            alpha = alpha.max(stand);
+            stand
+        };
+
+        let allow_checks = qs_ply < self.limits.qs_check_plies;
+
+        for m in moves {
+            if !in_check {
+                if is_capture(board, m) || m.get_promotion().is_some() {
+                    // Skip captures that static exchange evaluation says lose material.
+                    // These are the bulk of quiescence nodes and almost never change the
+                    // score, because the opponent simply recaptures.
+                    if self.limits.qs_see_pruning && see(board, m) < 0 {
+                        continue;
+                    }
+                } else if allow_checks {
+                    if board.make_move_new(m).checkers() == &chess::EMPTY {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+            }
+
+            let score = -self.quiescence(&board.make_move_new(m), -beta, -alpha, ply + 1, qs_ply + 1);
             if self.stopped {
                 return 0;
             }
-            alpha = alpha.max(score);
+            best = best.max(score);
+            alpha = alpha.max(best);
             if alpha >= beta {
                 break;
             }
         }
-        alpha
+
+        // In check with every evasion pruned away cannot happen (evasions are never
+        // pruned), so a -INF best here would be a bug rather than a mate.
+        if best == -INF {
+            return evaluate_with_style(board, self.limits.style);
+        }
+        best
     }
+
     fn negamax(&mut self, board: &Board, depth: u8, mut alpha: i32, beta: i32, ply: u8) -> i32 {
         self.nodes += 1;
         self.stop();
@@ -379,7 +641,7 @@ impl Searcher {
             BoardStatus::Ongoing => {}
         }
         if depth == 0 {
-            return self.quiescence(board, alpha, beta, ply);
+            return self.quiescence(board, alpha, beta, ply, 0);
         }
         let key = board.get_hash();
         let tt = self.table.get(key);
@@ -394,7 +656,7 @@ impl Searcher {
         let original_alpha = alpha;
         let mut best = None;
         let mut score = -INF;
-        for m in self.ordered(board, tt.and_then(|e| e.best)) {
+        for m in self.ordered(board, tt.and_then(|e| e.best), true) {
             let value = -self.negamax(&board.make_move_new(m), depth - 1, -beta, -alpha, ply + 1);
             if self.stopped {
                 return 0;
@@ -439,7 +701,7 @@ fn search_root(
     beta: i32,
     searcher: &mut Searcher,
 ) -> Option<(ChessMove, i32)> {
-    let moves = searcher.ordered(board, None);
+    let moves = searcher.ordered(board, None, true);
     let mut best = None;
     let mut best_score = -INF;
     for (index, m) in moves.into_iter().enumerate() {
@@ -611,6 +873,121 @@ mod tests {
         assert_eq!(perft(&board, 1), 42);
         assert_eq!(perft(&board, 2), 1818);
     }
+    /// Static exchange evaluation against hand-computed exchanges. These are arithmetic
+    /// facts about the given positions, so they pin the algorithm rather than the tuning.
+    #[test]
+    fn see_scores_known_exchanges() {
+        let cases: [(&str, &str, i32, &str); 7] = [
+            (
+                "pawn takes undefended pawn wins a pawn",
+                "4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1",
+                100,
+                "e4d5",
+            ),
+            (
+                "pawn takes pawn defended by a pawn is an even trade",
+                "4k3/8/2p5/3p4/4P3/8/8/4K3 w - - 0 1",
+                0,
+                "e4d5",
+            ),
+            (
+                "rook takes pawn defended by a pawn loses a rook for a pawn",
+                "4k3/8/2p5/3p4/8/8/8/3RK3 w - - 0 1",
+                -400,
+                "d1d5",
+            ),
+            (
+                "queen takes pawn defended by a pawn loses a queen for a pawn",
+                "4k3/8/2p5/3p4/8/8/8/3QK3 w - - 0 1",
+                -800,
+                "d1d5",
+            ),
+            (
+                "a quiet move captures nothing",
+                "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1",
+                0,
+                "e2e3",
+            ),
+            (
+                // With the black king on e8 it defends d8, so this is an even trade, not
+                // a free rook. Keeping both cases guards the king-as-defender path.
+                "rook takes rook defended by the enemy king is an even trade",
+                "3rk3/8/8/8/8/8/8/3RK3 w - - 0 1",
+                0,
+                "d1d8",
+            ),
+            (
+                "rook takes genuinely undefended rook wins a rook",
+                "3r3k/8/8/8/8/8/8/3RK3 w - - 0 1",
+                500,
+                "d1d8",
+            ),
+        ];
+        for (description, fen, expected, uci) in cases {
+            let board = Board::from_str(fen).unwrap();
+            let m = parse_move(&board, uci).unwrap();
+            assert_eq!(see(&board, m), expected, "{description} ({fen}, {uci})");
+        }
+    }
+
+    /// En passant captures a pawn that is not on the destination square; SEE has to model
+    /// that explicitly or it reads the exchange as winning nothing.
+    #[test]
+    fn see_handles_en_passant() {
+        let board = Board::from_str("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1").unwrap();
+        let m = parse_move(&board, "e5d6").unwrap();
+        assert_eq!(see(&board, m), 100, "en passant wins the passed pawn");
+    }
+
+    /// A queen promotion that also captures should be valued as the promotion gain plus
+    /// the captured piece, not merely the captured piece.
+    #[test]
+    fn see_accounts_for_promotion() {
+        let board = Board::from_str("1r2k3/P7/8/8/8/8/8/4K3 w - - 0 1").unwrap();
+        let m = parse_move(&board, "a7b8q").unwrap();
+        // Wins a rook (500) and upgrades a pawn to a queen (+800), then Black has no
+        // recapture available from the king on e8.
+        assert_eq!(see(&board, m), 1300);
+    }
+
+    /// Regression for the audited defect (MASTER_ENGINE_AUDIT.md F.1): quiescence
+    /// recursed on every quiet check for up to 32 plies, so these standard positions
+    /// could not finish a ONE-ply search in 600 seconds. Quiescence checks are now
+    /// bounded by QS_CHECK_PLIES.
+    ///
+    /// The node ceilings are deliberately loose -- they are a "did the exponential blowup
+    /// come back" alarm, not a tuning target.
+    #[test]
+    fn quiescence_terminates_in_open_positions() {
+        let positions = [
+            "r3k2r/p1ppqpb1/bn2pnp1/2pP4/1p2P3/2N2N2/PPPQBPPP/R3K2R w KQkq - 0 1",
+            "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 1",
+        ];
+        for fen in positions {
+            let board = Board::from_str(fen).unwrap();
+            let result = search(
+                &board,
+                SearchLimits {
+                    depth: 4,
+                    ..Default::default()
+                },
+            )
+            .expect("a legal move exists");
+            assert!(
+                MoveGen::new_legal(&board).any(|m| m == result.best_move),
+                "search returned an illegal move in {fen}"
+            );
+            assert_eq!(result.depth, 4, "did not complete depth 4 in {fen}");
+            assert!(
+                result.nodes < 5_000_000,
+                "{fen}: {} nodes at depth 4 -- quiescence blowup has returned",
+                result.nodes
+            );
+        }
+    }
+
     #[test]
     fn evaluation_rewards_bishop_pair() {
         let bishops = Board::from_str("4k3/8/8/8/8/8/2BB4/4K3 w - - 0 1").unwrap();
