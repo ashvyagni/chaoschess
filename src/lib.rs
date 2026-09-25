@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub mod fen;
 pub mod suites;
 pub mod time;
 pub mod uci;
@@ -196,7 +197,10 @@ impl Default for SearchLimits {
 }
 
 pub fn parse_move(board: &Board, coordinate: &str) -> Result<ChessMove, String> {
-    if coordinate.len() < 4 || coordinate.len() > 5 {
+    // Byte-indexed slicing below is only safe on ASCII. Without this, a 5-byte string
+    // like "e€4" passed the length check and panicked mid-character. Via
+    // `position startpos moves ...` that crashed the engine (found by tests/fuzz.rs).
+    if !coordinate.is_ascii() || coordinate.len() < 4 || coordinate.len() > 5 {
         return Err(format!("invalid coordinate move: {coordinate}"));
     }
     let from = parse_square(&coordinate[0..2])?;

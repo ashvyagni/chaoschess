@@ -8,6 +8,7 @@
 //! Ownership keeps it simple: the [`Engine`] (and its transposition table) moves into the
 //! worker for the search and comes back through the join handle. No locks.
 
+use crate::fen::parse_fen;
 use crate::time::{allocate, Clock};
 use crate::{
     mate_in_moves, parse_move, perft, search, Engine, Position, SearchInfo, SearchLimits, Style,
@@ -269,24 +270,10 @@ fn parse_position(args: &[&str]) -> Result<Position, String> {
             Position::new(Board::from_str(STARTPOS).expect("start position is valid"))
         }
         Some((&"fen", fields)) => {
-            if fields.len() < 4 {
-                return Err(format!("FEN needs at least 4 fields, got {}", fields.len()));
-            }
-            // Accept FENs without the halfmove and fullmove counters, which some tools omit.
-            let mut fen: Vec<&str> = fields.iter().take(6).copied().collect();
-            if fen.len() == 4 {
-                fen.push("0");
-            }
-            if fen.len() == 5 {
-                fen.push("1");
-            }
-            let board =
-                Board::from_str(&fen.join(" ")).map_err(|e| format!("invalid FEN: {e:?}"))?;
-            // The crate's Board discards the halfmove clock, so it is read here.
-            let clock = fen[4]
-                .parse::<u32>()
-                .map_err(|_| format!("invalid halfmove clock {:?}", fen[4]))?;
-            Position::with_clock(board, clock)
+            // Strict validation first: the crate's own parser can hit undefined behaviour,
+            // panic, or accept nonsense on malformed input (see src/fen.rs).
+            let fen = parse_fen(&fields.join(" ")).map_err(|e| format!("invalid FEN: {e}"))?;
+            Position::with_clock(fen.board, fen.halfmove_clock)
         }
         Some((other, _)) => return Err(format!("unknown position source {other}")),
         None => return Err("missing position source".to_string()),
@@ -415,6 +402,7 @@ mod tests {
         assert_ne!(moved.board, Board::default());
         assert!(parse_position(&["startpos", "moves", "e2e4", "e2e4"]).is_err());
         assert!(parse_position(&["fen", "8/8/8"]).is_err());
+        assert!(parse_position(&["fen", "8/8/8/8/8/8/8/8", "w", "-", "-", "0", "1"]).is_err());
     }
 
     #[test]
