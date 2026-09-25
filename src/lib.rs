@@ -2,7 +2,6 @@ use chess::{
     get_bishop_moves, get_king_moves, get_knight_moves, get_pawn_attacks, get_rook_moves,
     BitBoard, Board, BoardStatus, ChessMove, Color, File, MoveGen, Piece, Rank, Square,
 };
-use std::thread;
 use std::time::{Duration, Instant};
 
 pub mod suites;
@@ -831,48 +830,6 @@ fn search_root(
     best.map(|m| (m, best_score))
 }
 
-fn parallel_root(
-    board: &Board,
-    depth: u8,
-    limits: SearchLimits,
-) -> Option<(ChessMove, i32, u64, bool)> {
-    let moves: Vec<_> = MoveGen::new_legal(board).collect();
-    let started = Instant::now();
-    let results = thread::scope(|scope| {
-        moves
-            .iter()
-            .map(|m| {
-                scope.spawn(|| {
-                    let mut local_limits = limits;
-                    local_limits.threads = 1;
-                    local_limits.time = limits.time.map(|t| t.saturating_sub(started.elapsed()));
-                    let mut searcher = Searcher::new(local_limits);
-                    let score = -searcher.negamax(
-                        &board.make_move_new(*m),
-                        depth.saturating_sub(1),
-                        -INF,
-                        INF,
-                        1,
-                    );
-                    (*m, score, searcher.nodes, searcher.stopped)
-                })
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .map(|h| h.join().expect("root search thread panicked"))
-            .collect::<Vec<_>>()
-    });
-    let stopped = results.iter().any(|(_, _, _, stopped)| *stopped);
-    let nodes = results.iter().map(|(_, _, nodes, _)| *nodes).sum();
-    let mut best = results.first().copied()?;
-    for candidate in results.into_iter().skip(1) {
-        if candidate.1 > best.1 {
-            best = candidate;
-        }
-    }
-    Some((best.0, best.1, nodes, stopped))
-}
-
 pub fn search(board: &Board, limits: SearchLimits) -> Option<SearchResult> {
     let fallback = MoveGen::new_legal(board).next()?;
     let mut result = fallback;
@@ -888,14 +845,11 @@ pub fn search(board: &Board, limits: SearchLimits) -> Option<SearchResult> {
     let mut searcher = Searcher::new(limits);
     searcher.table.new_search();
 
+    // `limits.threads` is accepted but not yet used: the root-splitting parallel search it
+    // used to select was measured to be strictly harmful (experiments/E3) and was removed.
+    // Lazy SMP over a shared table is the replacement (roadmap item 9).
     for depth in 1..=limits.depth.max(1) {
-        let candidate = if limits.threads > 1 {
-            parallel_root(board, depth, limits).map(|(m, score, nodes, stopped)| {
-                total_nodes += nodes;
-                searcher.stopped = stopped;
-                (m, score)
-            })
-        } else {
+        let candidate = {
             let nodes_before = searcher.nodes;
             let previous_best = (completed_depth > 0).then_some(result);
             let (alpha, beta) = if completed_depth > 0 && previous.abs() < MATE_THRESHOLD {

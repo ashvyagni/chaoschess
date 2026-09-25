@@ -43,6 +43,12 @@ fn main() {
                         "Threads" => {
                             if let Some(threads) = value.and_then(|v| v.parse::<usize>().ok()) {
                                 limits.threads = threads.clamp(1, 32);
+                                if limits.threads > 1 {
+                                    println!(
+                                        "info string Threads={} accepted; search is single-threaded until Lazy SMP lands",
+                                        limits.threads
+                                    );
+                                }
                             }
                         }
                         _ => {}
