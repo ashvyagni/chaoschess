@@ -2,15 +2,23 @@ use chess::{
     get_bishop_moves, get_king_moves, get_knight_moves, get_pawn_attacks, get_rook_moves,
     BitBoard, Board, BoardStatus, ChessMove, Color, File, MoveGen, Piece, Rank, Square,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub mod suites;
+pub mod time;
+pub mod uci;
 
 pub const STARTPOS: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const INF: i32 = 32_000;
 const MATE: i32 = 30_000;
 /// Any score beyond this magnitude is a mate score ("mate in N plies"), not an evaluation.
 const MATE_THRESHOLD: i32 = MATE - 1_000;
+/// Deepest iterative-deepening depth the engine will attempt.
+pub const MAX_DEPTH: u8 = 64;
+/// Rows in the triangular principal-variation table; main-search ply never exceeds MAX_DEPTH.
+const PV_ROWS: usize = MAX_DEPTH as usize + 2;
 /// Ceiling on history-heuristic values. History persists across iterative-deepening
 /// iterations, so without a bound it grows until it outranks the TT move and captures.
 const HISTORY_MAX: i32 = 16_384;
@@ -40,7 +48,12 @@ pub enum Style {
 pub struct SearchLimits {
     pub depth: u8,
     pub nodes: Option<u64>,
+    /// Hard limit: the search is abandoned mid-iteration once this much time has passed.
     pub time: Option<Duration>,
+    /// Soft limit: no new iteration is started once half of this has passed, because the
+    /// next iteration would very likely overrun it. Used for clock-based time control;
+    /// `None` means "use the hard limit only" (e.g. `go movetime`).
+    pub soft_time: Option<Duration>,
     pub hash_mb: usize,
     pub style: Style,
     pub threads: usize,
@@ -55,12 +68,45 @@ pub struct SearchLimits {
     pub qs_see_pruning: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchResult {
     pub best_move: ChessMove,
+    /// Deepest *completed* iteration. An iteration interrupted by a limit is discarded,
+    /// never reported as completed.
     pub depth: u8,
+    pub seldepth: u8,
     pub score: i32,
     pub nodes: u64,
+    /// Principal variation of the deepest completed iteration, starting with `best_move`.
+    pub pv: Vec<ChessMove>,
+}
+
+/// Progress report emitted after every completed iterative-deepening iteration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchInfo {
+    pub depth: u8,
+    /// Deepest ply reached, including quiescence.
+    pub seldepth: u8,
+    /// Centipawns from the side to move's point of view, or a mate score; see
+    /// [`mate_in_moves`].
+    pub score: i32,
+    pub nodes: u64,
+    pub elapsed: Duration,
+    pub pv: Vec<ChessMove>,
+    /// Transposition-table occupancy by the current search, in permille.
+    pub hashfull: u32,
+}
+
+/// Convert a search score into UCI "mate N" form: positive N means the side to move mates
+/// in N moves, negative N means it is mated in N moves. `None` for ordinary scores.
+pub fn mate_in_moves(score: i32) -> Option<i32> {
+    if score > MATE_THRESHOLD {
+        Some((MATE - score + 1) / 2)
+    } else if score < -MATE_THRESHOLD {
+        Some(-(MATE + score) / 2)
+    } else {
+        None
+    }
 }
 
 impl Default for SearchLimits {
@@ -69,6 +115,7 @@ impl Default for SearchLimits {
             depth: 6,
             nodes: None,
             time: None,
+            soft_time: None,
             hash_mb: 16,
             style: Style::Classical,
             threads: 1,
@@ -563,6 +610,34 @@ impl Table {
     fn new_search(&mut self) {
         self.generation = self.generation.wrapping_add(1);
     }
+
+    /// A zero-capacity stand-in, used only while the real table is lent to a search.
+    /// Never probed: `slot` would divide by zero.
+    fn placeholder() -> Self {
+        Self {
+            entries: Vec::new(),
+            generation: 0,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.iter_mut().for_each(|entry| *entry = None);
+        self.generation = 0;
+    }
+
+    /// Permille of a fixed sample of slots written by the current search, the usual UCI
+    /// `hashfull` estimate.
+    fn hashfull(&self) -> u32 {
+        let sample = self.entries.len().min(1_000);
+        if sample == 0 {
+            return 0;
+        }
+        let used = self.entries[..sample]
+            .iter()
+            .filter(|e| e.is_some_and(|e| e.generation == self.generation))
+            .count();
+        (used * 1_000 / sample) as u32
+    }
 }
 
 struct Searcher {
@@ -572,23 +647,67 @@ struct Searcher {
     nodes: u64,
     stopped: bool,
     history: [[i32; 64]; 64],
+    /// Set by another thread (UCI `stop`, `quit`, a new `go`) to end the search.
+    stop_flag: Arc<AtomicBool>,
+    /// Time and external stops are honoured only once depth 1 is complete, so there is
+    /// always a searched move to return rather than an arbitrary legal one.
+    can_abort: bool,
+    /// Triangular PV table: `pv[ply]` is the best line found from `ply` in the current node.
+    pv: Vec<Vec<ChessMove>>,
+    seldepth: u8,
 }
 
 impl Searcher {
+    #[cfg(test)]
     fn new(limits: SearchLimits) -> Self {
+        Self::with_table(limits, Table::new(limits.hash_mb), Arc::new(AtomicBool::new(false)))
+    }
+
+    fn with_table(limits: SearchLimits, table: Table, stop_flag: Arc<AtomicBool>) -> Self {
         Self {
-            table: Table::new(limits.hash_mb),
+            table,
             limits,
             start: Instant::now(),
             nodes: 0,
             stopped: false,
             history: [[0; 64]; 64],
+            stop_flag,
+            can_abort: false,
+            pv: vec![Vec::new(); PV_ROWS],
+            seldepth: 0,
         }
     }
 
     fn stop(&mut self) {
-        self.stopped |= self.limits.nodes.is_some_and(|n| self.nodes >= n);
-        self.stopped |= self.limits.time.is_some_and(|t| self.start.elapsed() >= t);
+        if self.stopped {
+            return;
+        }
+        // A node budget is exact and always honoured, so fixed-node benchmarks stay
+        // reproducible.
+        if self.limits.nodes.is_some_and(|n| self.nodes >= n) {
+            self.stopped = true;
+            return;
+        }
+        // The clock and the external flag are polled every 1024 nodes: that is ~2 ms at
+        // current speeds, and reading them at every node is overhead for nothing.
+        if self.can_abort && self.nodes & 1023 == 0 {
+            let external = self.stop_flag.load(Ordering::Relaxed);
+            let timed_out = self.limits.time.is_some_and(|t| self.start.elapsed() >= t);
+            self.stopped = external || timed_out;
+        }
+    }
+
+    /// `pv[ply] = m` followed by the child's line.
+    fn update_pv(&mut self, ply: u8, m: ChessMove) {
+        let ply = usize::from(ply);
+        if ply + 1 >= self.pv.len() {
+            return;
+        }
+        let (head, tail) = self.pv.split_at_mut(ply + 1);
+        let line = &mut head[ply];
+        line.clear();
+        line.push(m);
+        line.extend_from_slice(&tail[0]);
     }
     /// Legal moves, best-first.
     ///
@@ -632,6 +751,7 @@ impl Searcher {
         qs_ply: u8,
     ) -> i32 {
         self.nodes += 1;
+        self.seldepth = self.seldepth.max(ply);
         self.stop();
         if self.stopped {
             return 0;
@@ -704,6 +824,10 @@ impl Searcher {
 
     fn negamax(&mut self, board: &Board, depth: u8, mut alpha: i32, beta: i32, ply: u8) -> i32 {
         self.nodes += 1;
+        self.seldepth = self.seldepth.max(ply);
+        if let Some(line) = self.pv.get_mut(usize::from(ply)) {
+            line.clear();
+        }
         self.stop();
         if self.stopped {
             return 0;
@@ -738,6 +862,9 @@ impl Searcher {
             if value > score {
                 score = value;
                 best = Some(m);
+                if value > alpha {
+                    self.update_pv(ply, m);
+                }
             }
             alpha = alpha.max(score);
             if alpha >= beta {
@@ -819,6 +946,7 @@ fn search_root(
         if value > best_score {
             best_score = value;
             best = Some(m);
+            searcher.update_pv(0, m);
         }
         alpha = alpha.max(value);
         if alpha >= beta {
@@ -830,62 +958,135 @@ fn search_root(
     best.map(|m| (m, best_score))
 }
 
+/// Search with a throwaway engine: fresh table, no external stop, no progress reports.
+/// Deterministic for fixed depth/nodes, which is what tests and benchmarks need.
 pub fn search(board: &Board, limits: SearchLimits) -> Option<SearchResult> {
-    let fallback = MoveGen::new_legal(board).next()?;
-    let mut result = fallback;
-    let mut completed_depth = 0;
-    let mut result_score = 0;
-    let mut total_nodes = 0;
-    let mut previous: i32 = 0;
+    Engine::new(limits.hash_mb).search(board, limits, Arc::new(AtomicBool::new(false)), &mut |_| {})
+}
 
-    // One searcher for the whole iterative-deepening run. The baseline built a fresh one
-    // -- a freshly zeroed transposition table and history -- for every depth, so each
-    // iteration re-derived everything the previous one had just learned, and each depth
-    // also restarted the clock.
-    let mut searcher = Searcher::new(limits);
+/// A long-lived engine. It owns the transposition table across searches, so what it
+/// learned thinking about one move is still there for the next. That is how it is used in
+/// a real game, via UCI.
+pub struct Engine {
+    table: Table,
+}
+
+impl Engine {
+    pub fn new(hash_mb: usize) -> Self {
+        Self {
+            table: Table::new(hash_mb),
+        }
+    }
+
+    /// Reallocate the table at a new size. Its contents are lost.
+    pub fn resize(&mut self, hash_mb: usize) {
+        self.table = Table::new(hash_mb);
+    }
+
+    /// Forget everything, as for UCI `ucinewgame`.
+    pub fn clear(&mut self) {
+        self.table.clear();
+    }
+
+    /// Iterative-deepening search. `stop` ends it from another thread; `on_info` is called
+    /// after every completed iteration. The table size is the engine's own, and
+    /// `limits.hash_mb` is ignored here.
+    pub fn search(
+        &mut self,
+        board: &Board,
+        limits: SearchLimits,
+        stop: Arc<AtomicBool>,
+        on_info: &mut dyn FnMut(&SearchInfo),
+    ) -> Option<SearchResult> {
+        let table = std::mem::replace(&mut self.table, Table::placeholder());
+        let mut searcher = Searcher::with_table(limits, table, stop);
+        let result = iterate(&mut searcher, board, limits, on_info);
+        self.table = std::mem::replace(&mut searcher.table, Table::placeholder());
+        result
+    }
+}
+
+fn iterate(
+    searcher: &mut Searcher,
+    board: &Board,
+    limits: SearchLimits,
+    on_info: &mut dyn FnMut(&SearchInfo),
+) -> Option<SearchResult> {
+    let fallback = MoveGen::new_legal(board).next()?;
+    let mut result = SearchResult {
+        best_move: fallback,
+        depth: 0,
+        seldepth: 0,
+        score: 0,
+        nodes: 0,
+        pv: vec![fallback],
+    };
     searcher.table.new_search();
 
     // `limits.threads` is accepted but not yet used: the root-splitting parallel search it
     // used to select was measured to be strictly harmful (experiments/E3) and was removed.
     // Lazy SMP over a shared table is the replacement (roadmap item 9).
-    for depth in 1..=limits.depth.max(1) {
-        let candidate = {
-            let nodes_before = searcher.nodes;
-            let previous_best = (completed_depth > 0).then_some(result);
-            let (alpha, beta) = if completed_depth > 0 && previous.abs() < MATE_THRESHOLD {
-                (previous - 40, previous + 40)
-            } else {
-                (-INF, INF)
-            };
-            let mut candidate =
-                search_root(board, depth, alpha, beta, &mut searcher, previous_best);
-            if !searcher.stopped
-                && (alpha, beta) != (-INF, INF)
-                && candidate
-                    .as_ref()
-                    .is_some_and(|(_, s)| *s <= alpha || *s >= beta)
-            {
-                candidate = search_root(board, depth, -INF, INF, &mut searcher, previous_best);
-            }
-            total_nodes += searcher.nodes - nodes_before;
-            candidate
+    for depth in 1..=limits.depth.clamp(1, MAX_DEPTH) {
+        let previous_best = (result.depth > 0).then_some(result.best_move);
+        let (alpha, beta) = if result.depth > 0 && result.score.abs() < MATE_THRESHOLD {
+            (result.score - 40, result.score + 40)
+        } else {
+            (-INF, INF)
         };
-        if let Some((m, score)) = candidate {
-            result = m;
-            result_score = score;
-            previous = score;
-            completed_depth = depth;
+        let mut candidate = search_root(board, depth, alpha, beta, searcher, previous_best);
+        if !searcher.stopped
+            && (alpha, beta) != (-INF, INF)
+            && candidate
+                .as_ref()
+                .is_some_and(|(_, s)| *s <= alpha || *s >= beta)
+        {
+            candidate = search_root(board, depth, -INF, INF, searcher, previous_best);
         }
-        if searcher.stopped {
+
+        // An interrupted iteration is discarded: its score may be a bound and it has not
+        // looked at every move. Depth 1 always runs to completion (see Searcher::can_abort)
+        // unless a node budget cuts it, so a searched move is almost always available.
+        if searcher.stopped && result.depth > 0 {
             break;
         }
+        if let Some((m, score)) = candidate {
+            let mut pv = searcher.pv[0].clone();
+            if pv.first() != Some(&m) {
+                pv = vec![m];
+            }
+            result = SearchResult {
+                best_move: m,
+                depth,
+                seldepth: searcher.seldepth,
+                score,
+                nodes: searcher.nodes,
+                pv,
+            };
+            on_info(&SearchInfo {
+                depth,
+                seldepth: searcher.seldepth,
+                score,
+                nodes: searcher.nodes,
+                elapsed: searcher.start.elapsed(),
+                pv: result.pv.clone(),
+                hashfull: searcher.table.hashfull(),
+            });
+        }
+        searcher.can_abort = true;
+        if searcher.stopped || searcher.stop_flag.load(Ordering::Relaxed) {
+            break;
+        }
+        if let Some(soft) = limits.soft_time {
+            // Each iteration costs several times the one before, so once half the soft
+            // budget is spent the next iteration would very likely overrun; starting it
+            // only burns time that the hard limit then throws away.
+            if searcher.start.elapsed() >= soft / 2 {
+                break;
+            }
+        }
     }
-    Some(SearchResult {
-        best_move: result,
-        depth: completed_depth,
-        score: result_score,
-        nodes: total_nodes,
-    })
+    result.nodes = searcher.nodes;
+    Some(result)
 }
 
 #[cfg(test)]
@@ -1178,6 +1379,110 @@ mod tests {
         let value = searcher.history[Square::G1.to_index()][Square::F3.to_index()];
         assert!(value <= HISTORY_MAX, "history grew to {value}");
         assert!(value > HISTORY_MAX / 2, "history should saturate near the cap, got {value}");
+    }
+
+    #[test]
+    fn mate_scores_convert_to_uci_moves() {
+        assert_eq!(mate_in_moves(MATE - 1), Some(1)); // we mate next move
+        assert_eq!(mate_in_moves(MATE - 3), Some(2));
+        assert_eq!(mate_in_moves(-MATE + 2), Some(-1)); // we are mated after their move
+        assert_eq!(mate_in_moves(-MATE + 4), Some(-2));
+        assert_eq!(mate_in_moves(250), None);
+        assert_eq!(mate_in_moves(-MATE_THRESHOLD), None);
+    }
+
+    /// The stop flag must end a search that has no other limit, and the answer must be a
+    /// searched move from a completed iteration.
+    #[test]
+    fn stop_flag_ends_an_unbounded_search() {
+        let board = Board::from_str(
+            "r3k2r/p1ppqpb1/bn2pnp1/2pP4/1p2P3/2N2N2/PPPQBPPP/R3K2R w KQkq - 0 1",
+        )
+        .unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let stopper = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            flag.store(true, Ordering::Relaxed);
+        });
+        let started = Instant::now();
+        let result = Engine::new(16)
+            .search(
+                &board,
+                SearchLimits {
+                    depth: MAX_DEPTH,
+                    ..Default::default()
+                },
+                stop,
+                &mut |_| {},
+            )
+            .unwrap();
+        stopper.join().unwrap();
+        assert!(started.elapsed() < Duration::from_millis(1_500), "{:?}", started.elapsed());
+        assert!(result.depth >= 1);
+        assert!(MoveGen::new_legal(&board).any(|m| m == result.best_move));
+    }
+
+    /// Every PV reported per iteration must be playable from the root, and must start with
+    /// the move the iteration chose.
+    #[test]
+    fn reported_pvs_are_legal_and_consistent() {
+        for fen in [
+            STARTPOS,
+            "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        ] {
+            let board = Board::from_str(fen).unwrap();
+            let mut infos = Vec::new();
+            let result = Engine::new(16)
+                .search(
+                    &board,
+                    SearchLimits {
+                        depth: 6,
+                        ..Default::default()
+                    },
+                    Arc::new(AtomicBool::new(false)),
+                    &mut |info| infos.push(info.clone()),
+                )
+                .unwrap();
+            assert_eq!(infos.len(), 6, "{fen}: one report per completed depth");
+            assert_eq!(result.pv.first(), Some(&result.best_move), "{fen}");
+            for info in &infos {
+                let mut position = board;
+                for m in &info.pv {
+                    assert!(
+                        MoveGen::new_legal(&position).any(|legal| legal == *m),
+                        "{fen} depth {}: illegal pv move {m}",
+                        info.depth
+                    );
+                    position = position.make_move_new(*m);
+                }
+            }
+        }
+    }
+
+    /// The engine keeps its table between searches (that is its purpose in a game), and
+    /// `clear` must actually empty it.
+    #[test]
+    fn engine_table_persists_between_searches_until_cleared() {
+        let board = Board::default();
+        let limits = SearchLimits {
+            depth: 6,
+            ..Default::default()
+        };
+        let mut engine = Engine::new(16);
+        let no_stop = || Arc::new(AtomicBool::new(false));
+        let cold = engine.search(&board, limits, no_stop(), &mut |_| {}).unwrap();
+        let warm = engine.search(&board, limits, no_stop(), &mut |_| {}).unwrap();
+        assert!(
+            warm.nodes < cold.nodes,
+            "second search should reuse the table: cold {} warm {}",
+            cold.nodes,
+            warm.nodes
+        );
+        engine.clear();
+        let cleared = engine.search(&board, limits, no_stop(), &mut |_| {}).unwrap();
+        assert_eq!(cleared.nodes, cold.nodes, "clear() must restore cold behaviour");
     }
 
     #[test]

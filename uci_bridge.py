@@ -16,6 +16,38 @@ class SearchInfo:
     score_cp: int
 
 
+MATE_CP = 100_000
+
+
+def parse_info(line: str, depth: int, nodes: int, score_cp: int) -> tuple[int, int, int]:
+    """Read depth, nodes and score from a UCI `info` line by keyword, not by position.
+
+    UCI allows fields in any order and engines add fields over time, so fixed indices
+    break -- the previous version read `fields[7]` and would crash on the current engine's
+    `info depth D seldepth S multipv 1 score ...` format. A `score mate N` is mapped to a
+    large centipawn value with the right sign so callers that only understand centipawns
+    still rank it correctly.
+    """
+    fields = line.split()
+    for i, field in enumerate(fields[:-1]):
+        nxt = fields[i + 1]
+        if field == "depth" and nxt.isdigit():
+            depth = int(nxt)
+        elif field == "nodes" and nxt.isdigit():
+            nodes = int(nxt)
+        elif field == "score" and i + 2 < len(fields):
+            kind, value = nxt, fields[i + 2]
+            try:
+                n = int(value)
+            except ValueError:
+                continue
+            if kind == "cp":
+                score_cp = n
+            elif kind == "mate":
+                score_cp = MATE_CP - abs(n) if n > 0 else -MATE_CP + abs(n)
+    return depth, nodes, score_cp
+
+
 class UCIEngine:
     def __init__(self, root: Path | None = None, depth: int = 4, style: str = "Chaos"):
         root = root or Path(__file__).resolve().parent
@@ -64,11 +96,8 @@ class UCIEngine:
         depth = nodes = score_cp = 0
         for line in self.process.stdout:
             line = line.strip()
-            fields = line.split()
-            if line.startswith("info depth") and len(fields) >= 8:
-                depth = int(fields[2])
-                nodes = int(fields[4])
-                score_cp = int(fields[7])
+            if line.startswith("info ") and " score " in line:
+                depth, nodes, score_cp = parse_info(line, depth, nodes, score_cp)
             if line.startswith("bestmove "):
                 move = line.split(maxsplit=1)[1]
                 if move == "0000":
