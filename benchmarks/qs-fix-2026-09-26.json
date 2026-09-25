@@ -1,7 +1,7 @@
 {
   "label": "qs-fix",
   "date": "2026-09-26",
-  "commit": "c91f28c",
+  "commit": "c91f28c+dirty",
   "config": {
     "style": "Classical",
     "threads": 1,
@@ -355,5 +355,6 @@
         }
       ]
     }
-  }
+  },
+  "note": "Measured from an uncommitted working tree on top of c91f28c. Its search behaviour is identical to commit 022559d (bounded quiescence checks + SEE pruning); 022559d additionally adds the mate prover, test suite and SearchLimits knobs whose defaults reproduce this build."
 }

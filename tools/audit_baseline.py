@@ -36,9 +36,17 @@ SUITE: list[tuple[str, str]] = [
 
 
 def git_commit() -> str:
+    """HEAD, suffixed with '+dirty' when engine sources differ from it.
+
+    A record that says "commit X" must mean the numbers came from commit X's code;
+    otherwise the before/after trail is quietly wrong.
+    """
     try:
-        return subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
+        head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
                               capture_output=True, text=True, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain", "--", "src", "Cargo.toml"],
+                               cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
+        return f"{head}+dirty" if dirty else head
     except Exception:
         return "unknown"
 

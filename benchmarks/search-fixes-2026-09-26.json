@@ -1,0 +1,405 @@
+{
+  "label": "search-fixes",
+  "date": "2026-09-26",
+  "commit": "022559d+dirty",
+  "config": {
+    "style": "Classical",
+    "threads": 1,
+    "hash_mb": 16,
+    "max_depth": 8,
+    "timeout_s": 90.0
+  },
+  "machine": {
+    "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.14.6"
+  },
+  "positions": {
+    "startpos": {
+      "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+      "depths": [
+        {
+          "depth": 1,
+          "nodes": 48,
+          "seconds": 0.5605,
+          "nps": 85,
+          "score_cp": 45,
+          "best_move": "b1c3",
+          "child_peak_rss_mb": 17.9
+        },
+        {
+          "depth": 2,
+          "nodes": 306,
+          "seconds": 0.01,
+          "nps": 30700,
+          "score_cp": 0,
+          "best_move": "b1c3",
+          "child_peak_rss_mb": 18.1
+        },
+        {
+          "depth": 3,
+          "nodes": 1904,
+          "seconds": 0.0097,
+          "nps": 195927,
+          "score_cp": 45,
+          "best_move": "b1c3",
+          "child_peak_rss_mb": 18.4
+        },
+        {
+          "depth": 4,
+          "nodes": 8296,
+          "seconds": 0.0181,
+          "nps": 459064,
+          "score_cp": 0,
+          "best_move": "b1c3",
+          "child_peak_rss_mb": 18.7
+        },
+        {
+          "depth": 5,
+          "nodes": 49449,
+          "seconds": 0.0766,
+          "nps": 645407,
+          "score_cp": 10,
+          "best_move": "b1c3",
+          "child_peak_rss_mb": 18.7
+        },
+        {
+          "depth": 6,
+          "nodes": 99410,
+          "seconds": 0.164,
+          "nps": 606061,
+          "score_cp": 0,
+          "best_move": "b1c3",
+          "child_peak_rss_mb": 18.7
+        },
+        {
+          "depth": 7,
+          "nodes": 438340,
+          "seconds": 0.6547,
+          "nps": 669519,
+          "score_cp": 20,
+          "best_move": "b1c3",
+          "child_peak_rss_mb": 18.8
+        },
+        {
+          "depth": 8,
+          "nodes": 1310156,
+          "seconds": 2.4255,
+          "nps": 540155,
+          "score_cp": 0,
+          "best_move": "b1c3",
+          "child_peak_rss_mb": 18.8
+        }
+      ]
+    },
+    "kiwipete": {
+      "fen": "r3k2r/p1ppqpb1/bn2pnp1/2pP4/1p2P3/2N2N2/PPPQBPPP/R3K2R w KQkq - 0 1",
+      "depths": [
+        {
+          "depth": 1,
+          "nodes": 155,
+          "seconds": 0.008,
+          "nps": 19382,
+          "score_cp": -282,
+          "best_move": "e2a6",
+          "child_peak_rss_mb": 18.8
+        },
+        {
+          "depth": 2,
+          "nodes": 597,
+          "seconds": 0.0088,
+          "nps": 68057,
+          "score_cp": -282,
+          "best_move": "e2a6",
+          "child_peak_rss_mb": 18.8
+        },
+        {
+          "depth": 3,
+          "nodes": 4724,
+          "seconds": 0.0173,
+          "nps": 272533,
+          "score_cp": -289,
+          "best_move": "e2a6",
+          "child_peak_rss_mb": 18.8
+        },
+        {
+          "depth": 4,
+          "nodes": 15378,
+          "seconds": 0.0483,
+          "nps": 318501,
+          "score_cp": -289,
+          "best_move": "e2a6",
+          "child_peak_rss_mb": 18.8
+        },
+        {
+          "depth": 5,
+          "nodes": 71546,
+          "seconds": 0.1789,
+          "nps": 399982,
+          "score_cp": -295,
+          "best_move": "e2a6",
+          "child_peak_rss_mb": 18.8
+        },
+        {
+          "depth": 6,
+          "nodes": 209503,
+          "seconds": 0.5988,
+          "nps": 349848,
+          "score_cp": -337,
+          "best_move": "e2a6",
+          "child_peak_rss_mb": 18.8
+        },
+        {
+          "depth": 7,
+          "nodes": 980673,
+          "seconds": 2.4788,
+          "nps": 395631,
+          "score_cp": -364,
+          "best_move": "e2a6",
+          "child_peak_rss_mb": 18.8
+        },
+        {
+          "depth": 8,
+          "nodes": 3132816,
+          "seconds": 9.3705,
+          "nps": 334328,
+          "score_cp": -372,
+          "best_move": "e2a6",
+          "child_peak_rss_mb": 18.9
+        }
+      ]
+    },
+    "open-middlegame": {
+      "fen": "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1",
+      "depths": [
+        {
+          "depth": 1,
+          "nodes": 134,
+          "seconds": 0.0093,
+          "nps": 14337,
+          "score_cp": 75,
+          "best_move": "e1g1",
+          "child_peak_rss_mb": 18.9
+        },
+        {
+          "depth": 2,
+          "nodes": 879,
+          "seconds": 0.0086,
+          "nps": 102036,
+          "score_cp": 20,
+          "best_move": "b1c3",
+          "child_peak_rss_mb": 18.9
+        },
+        {
+          "depth": 3,
+          "nodes": 5449,
+          "seconds": 0.0146,
+          "nps": 374422,
+          "score_cp": 78,
+          "best_move": "b1c3",
+          "child_peak_rss_mb": 18.9
+        },
+        {
+          "depth": 4,
+          "nodes": 19269,
+          "seconds": 0.0412,
+          "nps": 468061,
+          "score_cp": 35,
+          "best_move": "b1c3",
+          "child_peak_rss_mb": 18.9
+        },
+        {
+          "depth": 5,
+          "nodes": 99541,
+          "seconds": 0.1729,
+          "nps": 575643,
+          "score_cp": 68,
+          "best_move": "b1c3",
+          "child_peak_rss_mb": 18.9
+        },
+        {
+          "depth": 6,
+          "nodes": 349974,
+          "seconds": 0.7676,
+          "nps": 455907,
+          "score_cp": 28,
+          "best_move": "b1c3",
+          "child_peak_rss_mb": 18.9
+        },
+        {
+          "depth": 7,
+          "nodes": 2107757,
+          "seconds": 4.4832,
+          "nps": 470141,
+          "score_cp": 48,
+          "best_move": "b1c3",
+          "child_peak_rss_mb": 18.9
+        },
+        {
+          "depth": 8,
+          "nodes": 8326535,
+          "seconds": 21.5924,
+          "nps": 385624,
+          "score_cp": 21,
+          "best_move": "b1c3",
+          "child_peak_rss_mb": 18.9
+        }
+      ]
+    },
+    "rook-endgame": {
+      "fen": "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+      "depths": [
+        {
+          "depth": 1,
+          "nodes": 44,
+          "seconds": 0.0096,
+          "nps": 4572,
+          "score_cp": 92,
+          "best_move": "b4f4",
+          "child_peak_rss_mb": 18.9
+        },
+        {
+          "depth": 2,
+          "nodes": 345,
+          "seconds": 0.0068,
+          "nps": 50730,
+          "score_cp": 92,
+          "best_move": "b4f4",
+          "child_peak_rss_mb": 18.9
+        },
+        {
+          "depth": 3,
+          "nodes": 1054,
+          "seconds": 0.0076,
+          "nps": 138345,
+          "score_cp": 96,
+          "best_move": "b4f4",
+          "child_peak_rss_mb": 18.9
+        },
+        {
+          "depth": 4,
+          "nodes": 3956,
+          "seconds": 0.0101,
+          "nps": 391705,
+          "score_cp": 98,
+          "best_move": "b4f4",
+          "child_peak_rss_mb": 18.9
+        },
+        {
+          "depth": 5,
+          "nodes": 15743,
+          "seconds": 0.0209,
+          "nps": 754963,
+          "score_cp": 90,
+          "best_move": "b4f4",
+          "child_peak_rss_mb": 18.9
+        },
+        {
+          "depth": 6,
+          "nodes": 37231,
+          "seconds": 0.042,
+          "nps": 886345,
+          "score_cp": 90,
+          "best_move": "b4f4",
+          "child_peak_rss_mb": 18.9
+        },
+        {
+          "depth": 7,
+          "nodes": 298809,
+          "seconds": 0.3236,
+          "nps": 923439,
+          "score_cp": 2,
+          "best_move": "b4f4",
+          "child_peak_rss_mb": 18.9
+        },
+        {
+          "depth": 8,
+          "nodes": 688170,
+          "seconds": 0.7792,
+          "nps": 883176,
+          "score_cp": 5,
+          "best_move": "b4f4",
+          "child_peak_rss_mb": 19.0
+        }
+      ]
+    },
+    "pawn-endgame": {
+      "fen": "8/8/4k3/8/8/4K3/4P3/8 w - - 0 1",
+      "depths": [
+        {
+          "depth": 1,
+          "nodes": 14,
+          "seconds": 0.008,
+          "nps": 1755,
+          "score_cp": 140,
+          "best_move": "e3d2",
+          "child_peak_rss_mb": 19.0
+        },
+        {
+          "depth": 2,
+          "nodes": 65,
+          "seconds": 0.0082,
+          "nps": 7950,
+          "score_cp": 111,
+          "best_move": "e3d2",
+          "child_peak_rss_mb": 19.0
+        },
+        {
+          "depth": 3,
+          "nodes": 292,
+          "seconds": 0.0076,
+          "nps": 38415,
+          "score_cp": 134,
+          "best_move": "e3d2",
+          "child_peak_rss_mb": 19.0
+        },
+        {
+          "depth": 4,
+          "nodes": 800,
+          "seconds": 0.0098,
+          "nps": 81851,
+          "score_cp": 113,
+          "best_move": "e3d2",
+          "child_peak_rss_mb": 19.0
+        },
+        {
+          "depth": 5,
+          "nodes": 2246,
+          "seconds": 0.0098,
+          "nps": 230300,
+          "score_cp": 140,
+          "best_move": "e3f2",
+          "child_peak_rss_mb": 19.0
+        },
+        {
+          "depth": 6,
+          "nodes": 4207,
+          "seconds": 0.0091,
+          "nps": 463481,
+          "score_cp": 140,
+          "best_move": "e3f2",
+          "child_peak_rss_mb": 19.0
+        },
+        {
+          "depth": 7,
+          "nodes": 11057,
+          "seconds": 0.013,
+          "nps": 850764,
+          "score_cp": 139,
+          "best_move": "e3f2",
+          "child_peak_rss_mb": 19.0
+        },
+        {
+          "depth": 8,
+          "nodes": 20534,
+          "seconds": 0.0181,
+          "nps": 1132832,
+          "score_cp": 140,
+          "best_move": "e3f2",
+          "child_peak_rss_mb": 19.0
+        }
+      ]
+    }
+  },
+  "note": "Measured from an uncommitted working tree on top of 022559d. The engine code measured is identical to commit 01be376 (sound TT, exact root PVS, persistent iterative deepening)."
+}

@@ -2,7 +2,7 @@
 
 - **Date:** 2026-09-26
 - **Commit under test:** `b091ae7` (baseline)
-- **Status:** diagnostic confirmed; **reverted**, superseded by the real fix (see Conclusion)
+- **Status:** diagnosis confirmed; real fix implemented in `022559d` (see Follow-up result)
 
 ## Hypothesis
 
@@ -100,3 +100,33 @@ the true, measured "before" state. The baseline is preserved in
 `benchmarks/baseline-2026-09-26.json`.
 
 **Follow-up:** roadmap item 1.
+
+## Follow-up result (implemented)
+
+The fix described above was implemented in `022559d`: quiet checks only for the first
+`QS_CHECK_PLIES = 2` quiescence plies, SEE pruning of losing captures, full evasions in
+check. Both knobs are exposed on `SearchLimits` so they can be swept.
+
+**Tactical sweep** — 22 machine-proven mates (`cargo run --release --bin tactics -- --sweep`),
+depth `2 × mate_in`, 10 s cap per position:
+
+| configuration | solved | nodes | time | hit cap |
+|---|---:|---:|---:|---:|
+| baseline: unbounded checks, no SEE | **19/22** | 138,462,412 | 86.7 s | 8 |
+| captures only, SEE on | 22/22 | 16,165 | 0.03 s | 0 |
+| checks ≤ 1, SEE on | 22/22 | 25,547 | 0.04 s | 0 |
+| checks ≤ 2, SEE on *(default)* | 22/22 | 27,679 | 0.05 s | 0 |
+| checks ≤ 4, SEE on | 22/22 | 68,505 | 0.07 s | 0 |
+| checks ≤ 2, SEE off | 22/22 | 27,949 | 0.04 s | 0 |
+
+**What this shows.** The unbounded behaviour was not a speed-for-tactics trade: under a time
+cap it *lost* three mates-in-2, because it could not finish depth 4. Bounding is a strict
+improvement on this suite.
+
+**What this does not show.** The suite cannot discriminate between 0, 1, 2 and 4 check
+plies — all solve 22/22. The default of 2 is therefore a conventional choice that this data
+neither supports nor contradicts; it costs 1.7× the nodes of captures-only here. Deciding it
+needs positions where the mating move lies *beyond* the main-search horizon and must be found
+by quiescence checks. Queued as an open question.
+
+**Conclusion: keep** bounded checks + SEE. **Open:** the value of `QS_CHECK_PLIES`.
