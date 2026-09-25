@@ -301,6 +301,9 @@ fn main() {
     println!("  +{} -{} ={}  score {:.1}%   LOS {:.1}%", tri.wins, tri.losses, tri.draws, 100.0 * tri.score(), 100.0 * tri.los());
     println!("  Elo {} (pentanomial, 95%)", fmt_elo(penta_elo, penta.variance()));
     println!("  Elo {} (trinomial, 95%)", fmt_elo(tri_elo, tri.variance()));
+    if let Some((lo, hi)) = tri.elo_wilson() {
+        println!("  Elo in [{lo:+.1}, {hi:+.1}] (Wilson score interval, 95%; finite even for sweeps)");
+    }
     println!("  pairs by score [0, ½, 1, 1½, 2]: {:?}", penta.0);
     if args.sprt.is_some() {
         println!("  SPRT: LLR {llr:+.2}, verdict {verdict:?}");
@@ -358,6 +361,8 @@ fn main() {
         json_str(&a.name), tri.wins, tri.draws, tri.losses, penta.0);
     let _ = writeln!(json, "  \"elo_pentanomial\": {},\n  \"pentanomial_variance\": {},\n  \"elo_trinomial\": {},\n  \"los\": {},",
         json_elo(penta_elo), json_num(penta.variance()), json_elo(tri_elo), json_num(tri.los()));
+    let wilson = tri.elo_wilson().map_or("null".to_string(), |(lo, hi)| format!("{{\"lower\": {}, \"upper\": {}}}", json_num(lo), json_num(hi)));
+    let _ = writeln!(json, "  \"elo_wilson\": {wilson},");
     match args.sprt {
         Some(s) => {
             let (lo, hi) = s.bounds();

@@ -113,6 +113,13 @@ impl Trinomial {
         })
     }
 
+    /// Elo bounds from the Wilson score interval; see [`wilson_interval`].
+    pub fn elo_wilson(&self) -> Option<(f64, f64)> {
+        let points = f64::from(self.wins) + 0.5 * f64::from(self.draws);
+        wilson_interval(points, f64::from(self.games()))
+            .map(|(lo, hi)| (elo_from_score(lo), elo_from_score(hi)))
+    }
+
     /// Likelihood of superiority: the probability that the true Elo difference is positive,
     /// from decisive games only (draws carry no information about who is stronger).
     pub fn los(&self) -> f64 {
@@ -122,6 +129,28 @@ impl Trinomial {
         }
         0.5 * (1.0 + erf((f64::from(self.wins) - f64::from(self.losses)) / (2.0 * decisive).sqrt()))
     }
+}
+
+/// Wilson score interval (95%) for a proportion: `points` out of `n`.
+///
+/// Unlike the normal approximation, it stays finite and meaningful at the extremes. A
+/// 100-0 sweep has zero sample variance and an infinite point estimate, but the Wilson
+/// lower bound still says how strong the winner must be at least. Treating each game's
+/// score as a proportion ignores that draws carry less variance, which makes the interval
+/// slightly conservative when draws occur.
+pub fn wilson_interval(points: f64, n: f64) -> Option<(f64, f64)> {
+    if n <= 0.0 {
+        return None;
+    }
+    let p = points / n;
+    let z2 = Z95 * Z95;
+    let centre = p + z2 / (2.0 * n);
+    let spread = Z95 * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt();
+    let denominator = 1.0 + z2 / n;
+    Some((
+        ((centre - spread) / denominator).max(0.0),
+        ((centre + spread) / denominator).min(1.0),
+    ))
 }
 
 /// Counts of game pairs by the pair's total score: index `i` holds pairs worth `i/2` points
@@ -293,6 +322,25 @@ mod tests {
         let small = Trinomial { wins: 6, draws: 8, losses: 6 }.elo().unwrap();
         let large = Trinomial { wins: 600, draws: 800, losses: 600 }.elo().unwrap();
         assert!(large.margin() < small.margin() / 5.0);
+    }
+
+    #[test]
+    fn wilson_interval_stays_finite_at_the_extremes() {
+        // 100 wins in 100 games: lower bound 1 / (1 + 1.96^2/100) = 0.96300...
+        let sweep = Trinomial { wins: 100, draws: 0, losses: 0 };
+        let (lo, hi) = sweep.elo_wilson().unwrap();
+        assert!(close(lo, elo_from_score(1.0 / (1.0 + Z95 * Z95 / 100.0)), 1e-9));
+        assert!(lo > 560.0 && lo < 570.0, "{lo}");
+        assert_eq!(hi, f64::INFINITY);
+        // Symmetric for a whitewash the other way.
+        let (lo0, hi0) = Trinomial { wins: 0, draws: 0, losses: 100 }.elo_wilson().unwrap();
+        assert_eq!(lo0, f64::NEG_INFINITY);
+        assert!(close(hi0, -lo, 1e-9));
+        // Away from the extremes it agrees closely with the normal approximation.
+        let t = Trinomial { wins: 300, draws: 0, losses: 200 };
+        let (wl, wh) = t.elo_wilson().unwrap();
+        let e = t.elo().unwrap();
+        assert!((wl - e.lower).abs() < 2.0 && (wh - e.upper).abs() < 2.0);
     }
 
     #[test]
