@@ -13,6 +13,33 @@ claim by building, testing, benchmarking and probing the running binaries.
 > re-run. Where I expected a defect and measurement disproved it, the measurement wins
 > and that is recorded as such (see §G.5).
 
+### Errata (added 2026-09-26, after the fixes in `7ac85ed`)
+
+Three statements in the original audit were wrong. They are corrected in place, marked
+**[corrected]**, and kept visible here because a record that silently changes is not
+worth much.
+
+1. **§G.1, "discards legal checking moves": the example was invalid.** The audit's
+   position was `rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR w`. There the pawn on
+   e2 blocks `Qd1-h5`, so `d1h5` is illegal whatever the generator does. The claim itself
+   is true: `d1h5` in `rnbqkbnr/ppppp2p/5p2/6p1/4P3/8/PPPP1PPP/RNBQKBNR w` (a mating
+   check) was not generated. It is now pinned by
+   `tests_py/test_moves.py::LegalityFilter`.
+2. **"kiwipete" is not kiwipete.** The FEN this repository called kiwipete
+   (`…/2pP4/…/2N2N2/PPPQBPPP/…`) is a variant of the Chess Programming Wiki position
+   (`…/3PN3/…/2N2Q1p/PPPBBPPP/…`). The §G.1 perft table compared it against the real
+   kiwipete's counts, so its three "kiwipete" rows had wrong expected values. The
+   generator was still broken on that position, just by different amounts. All other
+   uses of "kiwipete" in this document (the §F.1 timings, the benchmarks) refer to the
+   variant FEN. The measurements are unaffected; only the name was wrong.
+3. **§G.1 found four defects; there were seven.** Knights generated 4 of 8 jumps, Black
+   pawn captures used the wrong source square, and any pawn could double-push from any
+   rank. The first two were found by re-reading while fixing; the third by
+   `tools/diff_movegen.py`.
+
+All seven are fixed in `7ac85ed`, where the Python generator matches every published
+perft count to depth 4.
+
 ---
 
 ## Measurement environment
@@ -305,7 +332,7 @@ the two that `king_safety` already costs.
 
 ## G. Correctness risks
 
-### G.1 The legacy Python move generator is comprehensively broken — **confirmed**
+### G.1 The legacy Python move generator is comprehensively broken — **confirmed** (fixed in `7ac85ed`)
 
 `moves.py:185` filters legality with the wrong king:
 
@@ -329,19 +356,21 @@ Measured `perft` against known-correct counts:
 | startpos | 2 | 400 | 400 | pass |
 | startpos | 3 | 8,902 | 8,982 | **FAIL** |
 | startpos | 4 | 197,281 | 200,296 | **FAIL** |
-| kiwipete | 1 | 48 | 39 | **FAIL** (9 legal moves missing) |
-| kiwipete | 2 | 2,039 | 1,554 | **FAIL** |
-| kiwipete | 3 | 97,862 | 56,295 | **FAIL** |
+| kiwi-variant **[corrected]** | 1 | 42 | 39 | **FAIL** (3 legal moves missing) |
+| kiwi-variant **[corrected]** | 2 | 1,818 | 1,554 | **FAIL** |
+| kiwi-variant **[corrected]** | 3 | 75,804 | 56,295 | **FAIL** |
 | CPW pos 3 | 1 | 14 | 15 | **FAIL** |
 | CPW pos 3 | 4 | 43,238 | 62,055 | **FAIL** |
 | CPW pos 4 | 1 | 6 | **36** | **FAIL** (30 illegal moves offered) |
 
-Direct probes isolate four independent defects:
+Direct probes isolate four independent defects (three more were found later, see Errata):
 
 1. **Inverted legality filter** (`moves.py:190`). In
    `4k3/8/8/8/8/8/4r3/4K3 w`, `generate_legal_moves` returns `e1d2` and `e1f2`, both of
-   which leave the white king attacked by the rook on e2. In a position where `Qd1-h5+`
-   is legal, `d1h5` is **not** returned.
+   which leave the white king attacked by the rook on e2. **[corrected]** In
+   `rnbqkbnr/ppppp2p/5p2/6p1/4P3/8/PPPP1PPP/RNBQKBNR w`, where `Qd1-h5` is a legal mating
+   check, `d1h5` is **not** returned. (The position originally cited here had e2 blocked,
+   so it proved nothing; see Errata.)
 2. **All four castling occupancy masks are swapped between colours**
    (`moves.py:168–180`). White kingside tests `0x6000000000000000` (f8/g8) instead of
    `0x60` (f1/g1). Verified: from `R3KBNR w KQ` — f1 and g1 occupied by a bishop and a
@@ -358,7 +387,7 @@ Direct probes isolate four independent defects:
    `W_PAWN`. Verified: `b7b8n` places a **white pawn on b8** — a position no legal FEN
    can represent.
 
-**Blast radius.** This is the GUI's rules engine (§A), so the GUI enforces wrong rules.
+**Blast radius (at audit time).** This is the GUI's rules engine (§A), so the GUI enforces wrong rules.
 It is also the environment `mcts.py` searches and the generator `train.py` uses to
 produce every training label (`main.py:14`, `main.py:24`), so **any model trained by this
 repository is trained on a game that is not chess**.
