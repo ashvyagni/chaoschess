@@ -28,8 +28,17 @@ POSITIONS: dict[str, tuple[str, list[int]]] = {
         [20, 400, 8_902, 197_281, 4_865_609],
     ),
     "kiwipete": (
-        "r3k2r/p1ppqpb1/bn2pnp1/2pP4/1p2P3/2N2N2/PPPQBPPP/R3K2R w KQkq - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
         [48, 2_039, 97_862, 4_085_603],
+    ),
+    # Not the CPW kiwipete, although the original repository called it that. Its counts
+    # are not published anywhere; they come from the `chess` crate (`perft` UCI command),
+    # whose own counts on the published positions above are verified by cargo test.
+    # An earlier version of this tool paired this FEN with kiwipete's counts, which made
+    # the audit report false failures for it.
+    "kiwi-variant": (
+        "r3k2r/p1ppqpb1/bn2pnp1/2pP4/1p2P3/2N2N2/PPPQBPPP/R3K2R w KQkq - 0 1",
+        [42, 1_818, 75_804, 3_192_817],
     ),
     "cpw-pos3": (
         "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
@@ -89,7 +98,7 @@ def main() -> int:
     print("-" * 82)
     if failures:
         print(f"{failures} position/depth combination(s) FAILED -- moves.py generates illegal chess.")
-        print("See MASTER_ENGINE_AUDIT.md section G.1 for the four isolated root causes.")
+        print("Locate the first wrong position with: python3 tools/diff_movegen.py")
     else:
         print("all checked positions match known-correct perft counts.")
     return 1 if failures else 0

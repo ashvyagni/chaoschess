@@ -85,16 +85,25 @@ def generate_pseudo_moves(board):
         else:
             moves.append(Move(from_sq, to_sq))
 
-    double_push = dbl_push(pawns) & empty & push(empty)
+    # Only pawns still on their starting rank may advance two squares. `start_rank` was
+    # defined above but never applied, so any pawn could double-push from anywhere.
+    double_push = dbl_push(pawns & start_rank) & empty & push(empty)
     while double_push:
         to_sq, double_push = pop_lsb(double_push)
         from_sq = to_sq - (16 if board.color == WHITE else -16)
         moves.append(Move(from_sq, to_sq))
 
+    # White: left_cap = shift_nw (+7), right_cap = shift_ne (+9).
+    # Black: left_cap = shift_se (-7), right_cap = shift_sw (-9).
+    # The source square is the destination minus that same shift. The original code used
+    # -9/-7 for Black, i.e. the other diagonal, so Black captures named an empty square.
+    left_shift = 7 if board.color == WHITE else -7
+    right_shift = 9 if board.color == WHITE else -9
+
     left_captures = left_cap(pawns) & enemy
     while left_captures:
         to_sq, left_captures = pop_lsb(left_captures)
-        from_sq = to_sq - (7 if board.color == WHITE else -9)
+        from_sq = to_sq - left_shift
         if sq_to_bit(to_sq) & promo_rank:
             for pr in range(4):
                 moves.append(Move(from_sq, to_sq, promo=pr))
@@ -104,7 +113,7 @@ def generate_pseudo_moves(board):
     right_captures = right_cap(pawns) & enemy
     while right_captures:
         to_sq, right_captures = pop_lsb(right_captures)
-        from_sq = to_sq - (9 if board.color == WHITE else -7)
+        from_sq = to_sq - right_shift
         if sq_to_bit(to_sq) & promo_rank:
             for pr in range(4):
                 moves.append(Move(from_sq, to_sq, promo=pr))
@@ -117,12 +126,10 @@ def generate_pseudo_moves(board):
         ep_pawns_right = right_cap(pawns) & ep_mask
         while ep_pawns_left:
             to_sq, ep_pawns_left = pop_lsb(ep_pawns_left)
-            from_sq = to_sq - (7 if board.color == WHITE else -9)
-            moves.append(Move(from_sq, to_sq, ep=True))
+            moves.append(Move(to_sq - left_shift, to_sq, ep=True))
         while ep_pawns_right:
             to_sq, ep_pawns_right = pop_lsb(ep_pawns_right)
-            from_sq = to_sq - (9 if board.color == WHITE else -7)
-            moves.append(Move(from_sq, to_sq, ep=True))
+            moves.append(Move(to_sq - right_shift, to_sq, ep=True))
 
     knights = board.pieces[knight_sq]
     while knights:
@@ -164,18 +171,27 @@ def generate_pseudo_moves(board):
         to_sq, targets = pop_lsb(targets)
         moves.append(Move(ksq, to_sq))
 
+    # Squares that must be empty: f1 g1 = 0x60, b1 c1 d1 = 0x0E, and the same shifted to
+    # rank 8. The original code had the rank-1 and rank-8 masks swapped between the two
+    # colours, so White castled through its own pieces whenever Black's were clear.
+    # The rook must actually be on its corner too, in case castling rights arrived from
+    # an inconsistent FEN.
     if board.color == WHITE:
-        if board.castling[0] and not (occ & 0x6000000000000000):
+        if (board.castling[0] and not (occ & 0x0000000000000060)
+                and board.pieces[W_ROOK] & sq_to_bit(7) and board.pieces[W_KING] & sq_to_bit(4)):
             if not board.is_attacked(4, BLACK) and not board.is_attacked(5, BLACK) and not board.is_attacked(6, BLACK):
                 moves.append(Move(4, 6, castle=True))
-        if board.castling[1] and not (occ & 0x0E00000000000000):
+        if (board.castling[1] and not (occ & 0x000000000000000E)
+                and board.pieces[W_ROOK] & sq_to_bit(0) and board.pieces[W_KING] & sq_to_bit(4)):
             if not board.is_attacked(4, BLACK) and not board.is_attacked(3, BLACK) and not board.is_attacked(2, BLACK):
                 moves.append(Move(4, 2, castle=True))
     else:
-        if board.castling[2] and not (occ & 0x0000000000000060):
+        if (board.castling[2] and not (occ & 0x6000000000000000)
+                and board.pieces[B_ROOK] & sq_to_bit(63) and board.pieces[B_KING] & sq_to_bit(60)):
             if not board.is_attacked(60, WHITE) and not board.is_attacked(61, WHITE) and not board.is_attacked(62, WHITE):
                 moves.append(Move(60, 62, castle=True))
-        if board.castling[3] and not (occ & 0x000000000000000E):
+        if (board.castling[3] and not (occ & 0x0E00000000000000)
+                and board.pieces[B_ROOK] & sq_to_bit(56) and board.pieces[B_KING] & sq_to_bit(60)):
             if not board.is_attacked(60, WHITE) and not board.is_attacked(59, WHITE) and not board.is_attacked(58, WHITE):
                 moves.append(Move(60, 58, castle=True))
 
@@ -183,11 +199,19 @@ def generate_pseudo_moves(board):
 
 
 def generate_legal_moves(board):
-    pseudo = generate_pseudo_moves(board)
+    """Pseudo-legal moves that do not leave the mover's own king attacked.
+
+    apply_move() hands the turn to the opponent, so the king to test is the one belonging
+    to the side that just moved. The original code called in_check() on the new board,
+    which tests the *opponent's* king: it discarded every legal checking move and kept
+    every move that left the mover in check.
+    """
+    mover = board.color
+    opponent = 1 - mover
     legal = []
-    for move in pseudo:
+    for move in generate_pseudo_moves(board):
         new_board = apply_move(board, move)
-        if not new_board.in_check():
+        if not new_board.is_attacked(new_board.find_king(mover), opponent):
             legal.append(move)
     return legal
 
@@ -201,14 +225,20 @@ def apply_move(board, move):
         new.remove_piece(move.to_sq, captured)
 
     if move.ep:
-        ep_pawn_sq = move.to_sq + (8 if new.color == WHITE else -8)
-        new.remove_piece(ep_pawn_sq, W_PAWN if new.color == WHITE else B_PAWN)
+        # The captured pawn is behind the destination from the mover's point of view, and
+        # it belongs to the opponent. The original code looked the wrong way and removed
+        # the mover's own colour, so nothing was removed and the captured pawn survived.
+        ep_pawn_sq = move.to_sq - 8 if new.color == WHITE else move.to_sq + 8
+        new.remove_piece(ep_pawn_sq, B_PAWN if new.color == WHITE else W_PAWN)
 
     new.move_piece(move.from_sq, move.to_sq, piece)
 
     if move.promo != -1:
         new.remove_piece(move.to_sq, piece)
-        promo_map = [W_PAWN, W_BISHOP, W_ROOK, W_QUEEN] if new.color == WHITE else [B_PAWN, B_BISHOP, B_ROOK, B_QUEEN]
+        # Indexed by PROMO_KNIGHT=0, PROMO_BISHOP=1, PROMO_ROOK=2, PROMO_QUEEN=3. The first
+        # entry used to be the pawn, so "promote to knight" left a pawn on the last rank.
+        promo_map = ([W_KNIGHT, W_BISHOP, W_ROOK, W_QUEEN] if new.color == WHITE
+                     else [B_KNIGHT, B_BISHOP, B_ROOK, B_QUEEN])
         new.set_piece(move.to_sq, promo_map[move.promo])
 
     if move.castle:

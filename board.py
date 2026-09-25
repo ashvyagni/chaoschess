@@ -68,6 +68,22 @@ def shift_sw(bb):
     return (bb >> 9) & NOT_FILE_H
 
 
+def _knight_table():
+    table = []
+    for sq in range(64):
+        f, r = sq_file(sq), sq_rank(sq)
+        bb = 0
+        for df, dr in ((1, 2), (2, 1), (2, -1), (1, -2), (-1, -2), (-2, -1), (-2, 1), (-1, 2)):
+            nf, nr = f + df, r + dr
+            if 0 <= nf < 8 and 0 <= nr < 8:
+                bb |= 1 << make_sq(nf, nr)
+        table.append(bb)
+    return table
+
+
+KNIGHT_ATTACKS = _knight_table()
+
+
 class Board:
     def __init__(self):
         self.pieces = [0] * 12
@@ -185,12 +201,10 @@ class Board:
         return attacks
 
     def knight_attacks(self, sq):
-        n = sq_to_bit(sq)
-        attacks = shift_ne(shift_n(n)) | shift_nw(shift_n(n))
-        attacks |= shift_n(shift_ne(n)) | shift_n(shift_nw(n))
-        attacks |= shift_se(shift_s(n)) | shift_sw(shift_s(n))
-        attacks |= shift_s(shift_se(n)) | shift_s(shift_sw(n))
-        return attacks
+        # Precomputed from explicit (file, rank) offsets. The previous shift-composition
+        # version applied the same two-up-one-over shift twice and never generated the
+        # two-over-one-up jumps, so a centralised knight had 4 moves instead of 8.
+        return KNIGHT_ATTACKS[sq]
 
     def in_check(self):
         if self.color == WHITE:

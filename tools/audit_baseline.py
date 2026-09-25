@@ -28,7 +28,9 @@ DEFAULT_BIN = ROOT / "target" / "release" / "crazy-chess"
 # Fixed benchmark set. Kept small and stable so numbers stay comparable over time.
 SUITE: list[tuple[str, str]] = [
     ("startpos", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
-    ("kiwipete", "r3k2r/p1ppqpb1/bn2pnp1/2pP4/1p2P3/2N2N2/PPPQBPPP/R3K2R w KQkq - 0 1"),
+    # Recorded as "kiwipete" in benchmark files before 2026-09-26; it is a variant of the
+    # CPW position, not kiwipete itself. The FEN is unchanged so results stay comparable.
+    ("kiwi-variant", "r3k2r/p1ppqpb1/bn2pnp1/2pP4/1p2P3/2N2N2/PPPQBPPP/R3K2R w KQkq - 0 1"),
     ("open-middlegame", "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1"),
     ("rook-endgame", "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1"),
     ("pawn-endgame", "8/8/4k3/8/8/4K3/4P3/8 w - - 0 1"),

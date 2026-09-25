@@ -1125,8 +1125,23 @@ mod tests {
             i32::MIN
         );
     }
+    /// The published "kiwipete" position (Chess Programming Wiki). Castling, en passant,
+    /// promotions and pins all appear within three plies.
     #[test]
-    fn kiwipete_perft_regression() {
+    fn kiwipete_perft_matches_published_counts() {
+        let board =
+            Board::from_str("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1")
+                .unwrap();
+        assert_eq!(perft(&board, 1), 48);
+        assert_eq!(perft(&board, 2), 2_039);
+        assert_eq!(perft(&board, 3), 97_862);
+    }
+
+    /// The original repository called this position "kiwipete", but it is a variant (c5/d5
+    /// pawns, Qd2, Nf3). Its counts are not published; this pins the generator's current
+    /// values so any change is noticed.
+    #[test]
+    fn kiwipete_variant_perft_regression() {
         let board =
             Board::from_str("r3k2r/p1ppqpb1/bn2pnp1/2pP4/1p2P3/2N2N2/PPPQBPPP/R3K2R w KQkq - 0 1")
                 .unwrap();
