@@ -23,6 +23,10 @@ const MATE_THRESHOLD: i32 = MATE - 1_000;
 pub const MAX_DEPTH: u8 = 64;
 /// Rows in the triangular principal-variation table; main-search ply never exceeds MAX_DEPTH.
 const PV_ROWS: usize = MAX_DEPTH as usize + 2;
+/// Null-move pruning is tried only with at least this much depth left.
+const NULL_MOVE_MIN_DEPTH: u8 = 3;
+/// Null-move search depth is `depth - 1 - (NULL_MOVE_BASE_REDUCTION + depth / 6)`.
+const NULL_MOVE_BASE_REDUCTION: u8 = 3;
 /// Ceiling on history-heuristic values. History persists across iterative-deepening
 /// iterations, so without a bound it grows until it outranks the TT move and captures.
 const HISTORY_MAX: i32 = 16_384;
@@ -737,6 +741,9 @@ struct Searcher {
     path: Vec<u64>,
     /// Halfmove clock of each node from the root to the current node.
     clocks: Vec<u32>,
+    /// Whether each node from the root was reached by a null move, so two null moves are
+    /// never made in a row (that would just hand the move back).
+    null_moves: Vec<bool>,
 }
 
 impl Searcher {
@@ -759,6 +766,7 @@ impl Searcher {
             seldepth: 0,
             path: Vec::new(),
             clocks: vec![0],
+            null_moves: vec![false],
         }
     }
 
@@ -769,6 +777,8 @@ impl Searcher {
         self.path.push(root.board.get_hash());
         self.clocks.clear();
         self.clocks.push(root.halfmove_clock);
+        self.null_moves.clear();
+        self.null_moves.push(false);
     }
 
     /// Search `child` (the result of `m` played in `parent`) and return its score from
@@ -792,10 +802,53 @@ impl Searcher {
         };
         self.path.push(child.get_hash());
         self.clocks.push(clock);
+        self.null_moves.push(false);
         let value = -self.negamax(child, depth, -beta, -alpha, ply);
         self.path.pop();
         self.clocks.pop();
+        self.null_moves.pop();
         value
+    }
+
+    /// Null-move pruning. If the side to move could skip its turn and a reduced search
+    /// still fails high, a real move almost certainly fails high too, so the node is cut
+    /// off. Returns the cutoff score, or `None` to search normally.
+    ///
+    /// The guards cover the method's known failure modes:
+    /// - not at PV nodes, where an exact score is wanted;
+    /// - not in check, where passing is illegal and the idea is meaningless;
+    /// - not without non-pawn material: in pawn endings zugzwang is common, and there the
+    ///   right to move is a disadvantage, so "passing is fine" proves nothing;
+    /// - not twice in a row;
+    /// - only when the static evaluation already reaches beta;
+    /// - a mate score from the reduced search is not trusted: `beta` is returned instead.
+    fn try_null_move(&mut self, board: &Board, depth: u8, beta: i32, ply: u8) -> Option<i32> {
+        if depth < NULL_MOVE_MIN_DEPTH || self.null_moves.last() == Some(&true) {
+            return None;
+        }
+        let side = *board.color_combined(board.side_to_move());
+        let pawns_and_king = *board.pieces(Piece::Pawn) | *board.pieces(Piece::King);
+        if side & !pawns_and_king == chess::EMPTY {
+            return None;
+        }
+        if evaluate_with_style(board, self.limits.style) < beta {
+            return None;
+        }
+        let passed = board.null_move()?;
+        let reduction = NULL_MOVE_BASE_REDUCTION + depth / 6;
+        // The null move resets the repetition window (clock 0): positions on either side
+        // of a pass must never be counted as repetitions of each other.
+        self.path.push(passed.get_hash());
+        self.clocks.push(0);
+        self.null_moves.push(true);
+        let score = -self.negamax(&passed, depth.saturating_sub(1 + reduction), -beta, -beta + 1, ply + 1);
+        self.path.pop();
+        self.clocks.pop();
+        self.null_moves.pop();
+        if self.stopped || score < beta {
+            return None;
+        }
+        Some(if score >= MATE_THRESHOLD { beta } else { score })
     }
 
     /// Whether the current node (the last entry of `path`) is a draw by repetition.
@@ -1025,6 +1078,14 @@ impl Searcher {
                 _ => {}
             }
         }
+        let in_check = board.checkers() != &chess::EMPTY;
+        let pv_node = beta - alpha > 1;
+        if !pv_node && !in_check {
+            if let Some(cutoff) = self.try_null_move(board, depth, beta, ply) {
+                return cutoff;
+            }
+        }
+
         let original_alpha = alpha;
         let mut best = None;
         let mut score = -INF;
