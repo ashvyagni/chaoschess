@@ -1,0 +1,93 @@
+"""Small UCI client used by the legacy PySide6 front end."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen=True)
+class SearchInfo:
+    move: str
+    depth: int
+    nodes: int
+    score_cp: int
+
+
+class UCIEngine:
+    def __init__(self, root: Path | None = None, depth: int = 4, style: str = "Chaos"):
+        root = root or Path(__file__).resolve().parent
+        configured = os.environ.get("CRAZY_CHESS_ENGINE")
+        binary = Path(configured) if configured else root / "target" / "release" / "crazy-chess"
+        command = [str(binary)] if binary.exists() else ["cargo", "run", "--quiet", "--release"]
+        self.process = subprocess.Popen(
+            command,
+            cwd=root,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        self.depth = max(1, min(depth, 12))
+        self.last_info = SearchInfo("", 0, 0, 0)
+        self._send("uci")
+        self._wait_for("uciok")
+        self._send("setoption", "name", "Style", "value", style)
+        self._send("isready")
+        self._wait_for("readyok")
+
+    def _send(self, *parts: object) -> None:
+        if self.process.stdin is None:
+            raise RuntimeError("engine stdin is unavailable")
+        self.process.stdin.write(" ".join(map(str, parts)) + "\n")
+        self.process.stdin.flush()
+
+    def _wait_for(self, expected: str) -> str:
+        if self.process.stdout is None:
+            raise RuntimeError("engine stdout is unavailable")
+        for line in self.process.stdout:
+            line = line.strip()
+            if line == expected:
+                return line
+        raise RuntimeError(f"engine exited before replying with {expected}")
+
+    def best_move(self, fen: str, moves: list[str] | None = None) -> str:
+        # The FEN already describes the current board. Replaying the move list
+        # after it would apply every move twice.
+        self._send("position", "fen", *fen.split())
+        self._send("go", "depth", self.depth)
+        if self.process.stdout is None:
+            raise RuntimeError("engine stdout is unavailable")
+        depth = nodes = score_cp = 0
+        for line in self.process.stdout:
+            line = line.strip()
+            fields = line.split()
+            if line.startswith("info depth") and len(fields) >= 8:
+                depth = int(fields[2])
+                nodes = int(fields[4])
+                score_cp = int(fields[7])
+            if line.startswith("bestmove "):
+                move = line.split(maxsplit=1)[1]
+                if move == "0000":
+                    raise RuntimeError("engine reported no legal move")
+                self.last_info = SearchInfo(move, depth, nodes, score_cp)
+                return move
+        raise RuntimeError("engine exited before returning bestmove")
+
+    def set_style(self, style: str) -> None:
+        if style not in {"Classical", "Chaos"}:
+            raise ValueError(f"unsupported engine style: {style}")
+        self._send("setoption", "name", "Style", "value", style)
+        self._send("isready")
+        self._wait_for("readyok")
+
+    def close(self) -> None:
+        if self.process.poll() is None:
+            try:
+                self._send("quit")
+                self.process.wait(timeout=2)
+            except (BrokenPipeError, subprocess.TimeoutExpired):
+                self.process.kill()

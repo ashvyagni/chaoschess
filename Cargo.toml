@@ -1,0 +1,15 @@
+[package]
+name = "crazy-chess"
+version = "0.1.0"
+edition = "2021"
+description = "A correctness-first Rust chess engine with UCI support."
+license = "MIT"
+
+[dependencies]
+chess = "3.2"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "abort"
+
