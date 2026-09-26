@@ -5,7 +5,7 @@
 #
 # Both binaries are copied to a private directory first, so a rebuild during the match
 # can't change what is being tested. The result lands in matches/sprt-<name>.{json,pgn};
-# the JSON records both binaries' SHA-256.
+# the JSON records both binaries' SHA-256, and the PGN is gzipped.
 #
 # Defaults: tc 2+0.02, H0 elo0=0, H1 elo1=10, alpha = beta = 0.05, at most 4000 games.
 set -eu
@@ -32,3 +32,5 @@ cores="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
     --sprt "elo0=$elo0,elo1=$elo1,alpha=0.05,beta=0.05" \
     --event "SPRT $name vs $base" \
     --pgn "matches/sprt-$name.pgn" --json "matches/sprt-$name.json"
+# SPRT PGNs run to several MB; compressed they are ~8x smaller in the repository.
+gzip -9 -f "matches/sprt-$name.pgn"

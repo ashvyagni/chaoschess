@@ -23,6 +23,11 @@ const MATE_THRESHOLD: i32 = MATE - 1_000;
 pub const MAX_DEPTH: u8 = 64;
 /// Rows in the triangular principal-variation table; main-search ply never exceeds MAX_DEPTH.
 const PV_ROWS: usize = MAX_DEPTH as usize + 2;
+/// Move-ordering bands; see `Searcher::ordered`.
+const ORDER_TT: i64 = 4_000_000;
+const ORDER_GOOD_CAPTURE: i64 = 3_000_000;
+const ORDER_KILLER: i64 = 2_000_000;
+const ORDER_BAD_CAPTURE: i64 = -3_000_000;
 /// Null-move pruning is tried only with at least this much depth left.
 const NULL_MOVE_MIN_DEPTH: u8 = 3;
 /// Null-move search depth is `depth - 1 - (NULL_MOVE_BASE_REDUCTION + depth / 6)`.
@@ -744,6 +749,8 @@ struct Searcher {
     /// Whether each node from the root was reached by a null move, so two null moves are
     /// never made in a row (that would just hand the move back).
     null_moves: Vec<bool>,
+    /// Two killer moves per ply.
+    killers: Vec<[Option<ChessMove>; 2]>,
 }
 
 impl Searcher {
@@ -767,6 +774,7 @@ impl Searcher {
             path: Vec::new(),
             clocks: vec![0],
             null_moves: vec![false],
+            killers: vec![[None; 2]; PV_ROWS],
         }
     }
 
@@ -915,40 +923,66 @@ impl Searcher {
         line.push(m);
         line.extend_from_slice(&tail[0]);
     }
-    /// Legal moves, best-first.
+    /// Legal moves, best-first, in the standard bands:
     ///
-    /// `check_bonus` controls whether checking moves are promoted in the ordering. It
-    /// costs a full board copy per move to find out, which is worth it in the main search
-    /// (where it buys cutoffs over a large subtree) and not worth it in quiescence (where
-    /// the subtree is shallow and the same information is recomputed immediately after).
-    fn ordered(&self, board: &Board, tt: Option<ChessMove>, check_bonus: bool) -> Vec<ChessMove> {
+    /// 1. the transposition-table move;
+    /// 2. captures and promotions that static exchange evaluation says don't lose
+    ///    material, by MVV-LVA;
+    /// 3. the two killer moves for this ply (quiet moves that caused a cutoff at a
+    ///    sibling node);
+    /// 4. other quiet moves, by history score;
+    /// 5. captures that SEE says lose material, last.
+    ///
+    /// `ply` is `None` in quiescence, which needs only MVV-LVA among captures: it prunes
+    /// losing captures itself, so running SEE here too would be paid for twice.
+    ///
+    /// This replaced an ordering where history (up to 16,384) could outrank captures and
+    /// every quiet check was promoted above most captures by playing each move on a board
+    /// copy. Experiment E7 traced a failed LMR attempt to that ordering.
+    fn ordered(&self, board: &Board, tt: Option<ChessMove>, ply: Option<u8>) -> Vec<ChessMove> {
+        let killers = ply.and_then(|p| self.killers.get(usize::from(p))).copied().unwrap_or([None; 2]);
         let mut moves: Vec<_> = MoveGen::new_legal(board).collect();
-        // `sort_by_cached_key`, not `sort_by_key`: the key plays the move on a board copy
-        // to test for check, and `sort_by_key` recomputes the key on every comparison,
-        // about 2*log2(n) times per move. Profiling showed that closure taking ~42% of
-        // search time. The cached variant computes each key once and is also stable, so
-        // the ordering, and with it the whole search, is unchanged (verified: identical
-        // node counts).
+        // Cached keys: each key is computed once, not once per comparison (see 74fcfb6).
         moves.sort_by_cached_key(|m| {
-            // MVV-LVA: prefer taking the most valuable victim with the least valuable
-            // attacker.
-            let victim = board
-                .piece_on(m.get_dest())
-                .map_or(0, |p| PIECE_VALUES[p.to_index()]);
-            let attacker = board
-                .piece_on(m.get_source())
-                .map_or(1, |p| PIECE_VALUES[p.to_index()]);
-            let tt_bonus = if Some(*m) == tt { 1_000_000 } else { 0 };
-            let check = if check_bonus && board.make_move_new(*m).checkers() != &chess::EMPTY {
-                50_000
+            let m = *m;
+            let score: i64 = if Some(m) == tt {
+                ORDER_TT
+            } else if is_capture(board, m) || m.get_promotion().is_some() {
+                let victim = if is_en_passant(board, m) {
+                    PIECE_VALUES[Piece::Pawn.to_index()]
+                } else {
+                    board.piece_on(m.get_dest()).map_or(0, |p| PIECE_VALUES[p.to_index()])
+                };
+                let attacker = board.piece_on(m.get_source()).map_or(0, |p| PIECE_VALUES[p.to_index()]);
+                let promotion = m.get_promotion().map_or(0, |p| PIECE_VALUES[p.to_index()]);
+                let mvv_lva = i64::from(victim * 10 + promotion - attacker);
+                if ply.is_none() || see(board, m) >= 0 {
+                    ORDER_GOOD_CAPTURE + mvv_lva
+                } else {
+                    ORDER_BAD_CAPTURE + mvv_lva
+                }
+            } else if Some(m) == killers[0] {
+                ORDER_KILLER
+            } else if Some(m) == killers[1] {
+                ORDER_KILLER - 1
             } else {
-                0
+                i64::from(self.history[m.get_source().to_index()][m.get_dest().to_index()])
             };
-            -(tt_bonus + check + victim * 10 - attacker
-                + self.history[m.get_source().to_index()][m.get_dest().to_index()])
+            std::cmp::Reverse(score)
         });
         moves
     }
+
+    /// Remember a quiet move that caused a cutoff at this ply, most recent first.
+    fn store_killer(&mut self, ply: u8, m: ChessMove) {
+        if let Some(slot) = self.killers.get_mut(usize::from(ply)) {
+            if slot[0] != Some(m) {
+                slot[1] = slot[0];
+                slot[0] = Some(m);
+            }
+        }
+    }
+
     /// Quiescence search: resolve the position until nothing forcing is left, so the
     /// evaluation is not read in the middle of an exchange.
     ///
@@ -973,7 +1007,7 @@ impl Searcher {
 
         // The move list doubles as terminal detection, so no separate status() call --
         // which would cost a second full move generation -- is needed.
-        let moves = self.ordered(board, None, false);
+        let moves = self.ordered(board, None, None);
         if moves.is_empty() {
             return if in_check { -MATE + i32::from(ply) } else { 0 };
         }
@@ -1089,7 +1123,7 @@ impl Searcher {
         let original_alpha = alpha;
         let mut best = None;
         let mut score = -INF;
-        for (index, m) in self.ordered(board, tt.and_then(|e| e.best), true).into_iter().enumerate() {
+        for (index, m) in self.ordered(board, tt.and_then(|e| e.best), Some(ply)).into_iter().enumerate() {
             let child = board.make_move_new(m);
             // Principal variation search: with good ordering the first move is usually
             // best, so later moves only need to be *refuted*. A null-window scout at
@@ -1118,8 +1152,9 @@ impl Searcher {
             }
             alpha = alpha.max(score);
             if alpha >= beta {
-                if !is_capture(board, m) {
+                if !is_capture(board, m) && m.get_promotion().is_none() {
                     self.reward_history(m, depth);
+                    self.store_killer(ply, m);
                 }
                 break;
             }
@@ -1174,7 +1209,7 @@ fn search_root(
     searcher: &mut Searcher,
     previous_best: Option<ChessMove>,
 ) -> Option<(ChessMove, i32)> {
-    let moves = searcher.ordered(board, previous_best, true);
+    let moves = searcher.ordered(board, previous_best, Some(0));
     let child_depth = depth.saturating_sub(1);
     let mut best = None;
     let mut best_score = -INF;
