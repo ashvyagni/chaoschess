@@ -112,6 +112,7 @@ game, so a rebuild mid-test can't change what is being tested. Results go to
 | E6 | null-move pruning `63b3bce` vs `c8576f3` | 2+0.02 | 656 | **+25.5 ± 18.2, SPRT accepted H1** (LOS 99.6%) |
 | E7 | late move reductions `9d4355f` vs `63b3bce` | 2+0.02 | 958 | −6.2 ± 16.3, **SPRT accepted H0 → reverted** |
 | E8 | move ordering (killers, SEE bands) `e8b05bd` vs `42eae59` | 2+0.02 | 244 | **+76.7 ± 30.5, SPRT accepted H1** |
+| E9 | LMR retry (same code as E7) `7030d5a` vs `8db5d50` | 2+0.02 | 818 | **+30.7 ± 17.4, SPRT accepted H1** |
 
 More rows are added as SPRTs finish. The full records are in `matches/`.
 

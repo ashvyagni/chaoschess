@@ -12,7 +12,7 @@ the dependency analysis: each item unblocks the next measurement. Status says wh
 | 3 | correctness floor: rules, draw detection, fuzzing, GUI rules | **done** | 7 Python generator bugs fixed; crate UB guarded; `tests/fuzz.rs` |
 | 4 | tactical + benchmark suites | **partial** | 22 proven mates; fixed-depth benchmark JSON. *Missing:* non-mate tactics and positional suites |
 | 5 | tournament driver, SPRT, Elo | **done** | `arena`, `stats`, `tools/sprt.sh`; E4 (140/140 vs baseline) |
-| 6 | search strength, each SPRT-gated | **in progress** | null-move +25.5 Elo (E6); PVS inconclusive (E5); LMR next |
+| 6 | search strength, each SPRT-gated | **in progress** | null move +25.5 (E6), ordering +76.7 (E8), LMR +30.7 (E9); PVS inconclusive (E5) |
 | 7 | split `lib.rs`; `Evaluator` trait; tapered eval; passed-pawn fix | planned | — |
 | 8 | own move generator with incremental make/unmake | planned | prerequisite for NNUE accumulators |
 | 9 | Lazy SMP over a shared lock-free TT | planned | root split removed as harmful (E3) |
@@ -32,7 +32,7 @@ tests), measured by nodes at fixed depth, then SPRT'd against the previous commi
 |---|---|
 | interior PVS | inconclusive (−5.8 ± 13.0); kept as LMR infrastructure (E5) |
 | null-move pruning | **accepted**: +25.5 ± 18.2 Elo (E6) |
-| late move reductions | **rejected** first attempt (E7: −6.2 ± 16.3); retry after ordering |
+| late move reductions | **accepted** on retry: +30.7 ± 17.4 (E9); first attempt rejected (E7) |
 | move ordering: good captures > killers > history > bad captures | **accepted**: +76.7 ± 30.5 Elo (E8) |
 | check extension | planned |
 | reverse futility / futility / late move pruning | planned |
