@@ -259,7 +259,11 @@ fn main() {
     let mut tri = Trinomial::default();
     let mut penta = Pentanomial::default();
     let mut results: Vec<(usize, GameRecord, GameRecord)> = Vec::new();
-    let mut verdict = SprtVerdict::Continue;
+    // The SPRT's decision is made when the LLR first crosses a bound. Games already in
+    // progress then finish ("overshoot") and are reported, but they can't un-make the
+    // decision. Before this was separated, a test that stopped on H1 could be recorded
+    // as "Continue" when overshoot nudged the LLR back inside the bound.
+    let mut decision: Option<(SprtVerdict, f64, u32)> = None;
     let mut llr = 0.0;
     for (pair, first, second) in rx {
         // `a`'s score in each game: white in the first, black in the second.
@@ -282,7 +286,10 @@ fn main() {
             llr = s.llr_pentanomial(&penta);
             let (lo, hi) = s.bounds();
             let _ = write!(line, "  LLR {llr:+.2} [{lo:.2}, {hi:.2}]");
-            verdict = s.verdict(llr);
+            let verdict = s.verdict(llr);
+            if verdict != SprtVerdict::Continue && decision.is_none() {
+                decision = Some((verdict, llr, tri.games()));
+            }
             if verdict != SprtVerdict::Continue && !stop.swap(true, Ordering::SeqCst) {
                 let _ = write!(line, "  -> {verdict:?}, finishing games in progress");
             }
@@ -306,7 +313,12 @@ fn main() {
     }
     println!("  pairs by score [0, ½, 1, 1½, 2]: {:?}", penta.0);
     if args.sprt.is_some() {
-        println!("  SPRT: LLR {llr:+.2}, verdict {verdict:?}");
+        match decision {
+            Some((d, at_llr, at_games)) => println!(
+                "  SPRT: decided {d:?} at game {at_games} (LLR {at_llr:+.2}); final LLR {llr:+.2} after overshoot"
+            ),
+            None => println!("  SPRT: undecided, LLR {llr:+.2} at the game cap"),
+        }
     }
 
     let mut terminations: BTreeMap<String, usize> = BTreeMap::new();
@@ -366,8 +378,12 @@ fn main() {
     match args.sprt {
         Some(s) => {
             let (lo, hi) = s.bounds();
-            let _ = writeln!(json, "  \"sprt\": {{\"elo0\": {}, \"elo1\": {}, \"alpha\": {}, \"beta\": {}, \"llr\": {}, \"lower\": {}, \"upper\": {}, \"verdict\": {}}},",
-                s.elo0, s.elo1, s.alpha, s.beta, json_num(llr), json_num(lo), json_num(hi), json_str(&format!("{verdict:?}")));
+            let (decided, at_llr, at_games) = match decision {
+                Some((d, l, g)) => (format!("{d:?}"), json_num(l), g.to_string()),
+                None => ("Undecided".to_string(), "null".to_string(), "null".to_string()),
+            };
+            let _ = writeln!(json, "  \"sprt\": {{\"elo0\": {}, \"elo1\": {}, \"alpha\": {}, \"beta\": {}, \"llr\": {}, \"lower\": {}, \"upper\": {}, \"verdict\": {}, \"decided_at_games\": {at_games}, \"llr_at_decision\": {at_llr}}},",
+                s.elo0, s.elo1, s.alpha, s.beta, json_num(llr), json_num(lo), json_num(hi), json_str(&decided));
         }
         None => json.push_str("  \"sprt\": null,\n"),
     }
