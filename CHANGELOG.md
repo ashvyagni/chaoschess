@@ -8,6 +8,43 @@ Some milestones landed in commits made by the project owner with short messages.
 detailed descriptions are kept here, so the history stays explainable without rewriting
 published commits.
 
+## Roadmap items 5–6 — measurement, then search strength (`f4d445e` … `bb4a8e0`)
+
+**Tournament infrastructure (item 5).**
+- `src/stats.rs`: Elo with pentanomial, trinomial and Wilson intervals, LOS and GSPRT.
+  It is checked in simulation against its own claims.
+- `src/notation.rs`: SAN.
+- `src/arena.rs`: engine-vs-engine over UCI. Nothing an engine says is trusted; games end
+  by the rules; failures lose. Tested against fake broken engines.
+- `src/bin/arena`: parallel paired matches with SPRT early stop, PGN, and a JSON record
+  that includes the binaries' SHA-256.
+- `openings/standard40.txt`, plus `tools/build_engine_at.sh` and `tools/sprt.sh`.
+
+**First measured result (E4).** The engine after items 1–3 beat the audited original
+140–0: Elo ≥ +566 at movetime 100 and ≥ +407 at an equal node budget (Wilson 95%).
+
+**Performance (`74fcfb6`).** Profiling showed the move-ordering sort key taking about 42%
+of search time, because `sort_by_key` recomputes it per comparison. With cached keys:
+identical trees, 1.2–1.9× faster.
+
+**Search techniques (item 6), each gated by SPRT at 2+0.02:**
+
+| | change | games | Elo | verdict |
+|---|---|---:|---|---|
+| E5 | interior PVS | 1200 | −5.8 ± 13.0 | inconclusive; kept as LMR infrastructure |
+| E6 | null-move pruning | 656 | +25.5 ± 18.2 | accepted |
+| E7 | late move reductions | 958 | −6.2 ± 16.3 | **rejected, reverted** |
+| E8 | move ordering (killers, SEE bands) | 244 | +76.7 ± 30.5 | accepted |
+| E9 | LMR again, same code, on E8 | 818 | +30.7 ± 17.4 | accepted |
+| E10 | cumulative vs pre-item-6 | 400 | **+168.4 ± 27.9** | measured |
+
+E7 → E8 → E9 is the experiment log working as intended. A rejected change was kept with
+a diagnosis ("the ordering hides good moves late in the list"); fixing that and re-testing
+the identical code flipped the result.
+
+**Methodology.** E5 exposed 16 time forfeits, caused by running builds alongside the
+match (0 in 300 games on an idle machine). Rule adopted: nothing CPU-heavy during a match.
+
 ## Roadmap item 3 — correctness floor (`7ac85ed` … `cf4ab83`)
 
 **GUI rules (`7ac85ed`).** `moves.py`, which decides what a human may play in the GUI,
