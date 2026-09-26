@@ -769,6 +769,8 @@ struct Searcher {
     null_moves: Vec<bool>,
     /// Two killer moves per ply.
     killers: Vec<[Option<ChessMove>; 2]>,
+    /// Depth of the current iterative-deepening iteration; bounds check extensions.
+    root_depth: u8,
 }
 
 impl Searcher {
@@ -793,6 +795,7 @@ impl Searcher {
             clocks: vec![0],
             null_moves: vec![false],
             killers: vec![[None; 2]; PV_ROWS],
+            root_depth: MAX_DEPTH,
         }
     }
 
@@ -1092,7 +1095,7 @@ impl Searcher {
         best
     }
 
-    fn negamax(&mut self, board: &Board, depth: u8, mut alpha: i32, beta: i32, ply: u8) -> i32 {
+    fn negamax(&mut self, board: &Board, mut depth: u8, mut alpha: i32, beta: i32, ply: u8) -> i32 {
         self.nodes += 1;
         self.seldepth = self.seldepth.max(ply);
         if let Some(line) = self.pv.get_mut(usize::from(ply)) {
@@ -1116,6 +1119,13 @@ impl Searcher {
         {
             return 0;
         }
+        // Check extension: a side in check has few legal replies and forcing sequences
+        // are where the horizon hides tactics, so search one ply deeper. Capped at twice
+        // the iteration depth, so a long run of checks can't extend without bound.
+        let in_check = board.checkers() != &chess::EMPTY;
+        if in_check && ply < self.root_depth.saturating_mul(2) && ply < MAX_DEPTH {
+            depth = depth.saturating_add(1);
+        }
         if depth == 0 {
             return self.quiescence(board, alpha, beta, ply, 0);
         }
@@ -1130,7 +1140,6 @@ impl Searcher {
                 _ => {}
             }
         }
-        let in_check = board.checkers() != &chess::EMPTY;
         let pv_node = beta - alpha > 1;
         if !pv_node && !in_check {
             let static_eval = evaluate_with_style(board, self.limits.style);
@@ -1380,6 +1389,7 @@ fn iterate(
         } else {
             (-INF, INF)
         };
+        searcher.root_depth = depth;
         let mut candidate = search_root(board, depth, alpha, beta, searcher, previous_best);
         if !searcher.stopped
             && (alpha, beta) != (-INF, INF)

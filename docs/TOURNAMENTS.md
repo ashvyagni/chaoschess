@@ -115,6 +115,7 @@ game, so a rebuild mid-test can't change what is being tested. Results go to
 | E9 | LMR retry (same code as E7) `7030d5a` vs `8db5d50` | 2+0.02 | 818 | **+30.7 ± 17.4, SPRT accepted H1** |
 | E10 | cumulative: `7030d5a` vs `c8576f3` | 2+0.02 | 400 | **+168.4 ± 27.9** (fixed length) |
 | E11 | reverse futility pruning vs `6ecca19` | 2+0.02 | 1902 | **+14.8 ± 11.0, SPRT accepted H1**; Chaos finds 2 ladder mates 2 plies later |
+| E12 | check extension vs `e326f65` | 2+0.02 | 2000 + 730 | +10.1 ± 10.8 (undecided at cap); non-regression SPRT then **accepted "not worse"** (+18.1 ± 17.6) |
 
 More rows are added as SPRTs finish. The full records are in `matches/`.
 
