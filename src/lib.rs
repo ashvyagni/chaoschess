@@ -98,6 +98,13 @@ pub struct SearchLimits {
     pub qs_check_plies: u8,
     /// Prune captures that static exchange evaluation scores as losing material.
     pub qs_see_pruning: bool,
+    /// Enable the deliberately non-score-preserving techniques: null-move pruning,
+    /// reverse futility pruning, late move reductions and the check extension. They are
+    /// what make the engine strong, and also what make its scores differ from plain
+    /// minimax. Turning them off leaves only score-preserving machinery (alpha-beta,
+    /// PVS, aspiration windows, TT, quiescence), which the exactness tests verify, and
+    /// gives a full-width baseline for research comparisons.
+    pub selective: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,6 +230,7 @@ impl Default for SearchLimits {
             threads: 1,
             qs_check_plies: QS_CHECK_PLIES,
             qs_see_pruning: true,
+            selective: true,
         }
     }
 }
@@ -1122,7 +1130,7 @@ impl Searcher {
         // are where the horizon hides tactics, so search one ply deeper. Capped at twice
         // the iteration depth, so a long run of checks can't extend without bound.
         let in_check = board.checkers() != &chess::EMPTY;
-        if in_check && ply < self.root_depth.saturating_mul(2) && ply < MAX_DEPTH {
+        if self.limits.selective && in_check && ply < self.root_depth.saturating_mul(2) && ply < MAX_DEPTH {
             depth = depth.saturating_add(1);
         }
         if depth == 0 {
@@ -1140,7 +1148,7 @@ impl Searcher {
             }
         }
         let pv_node = beta - alpha > 1;
-        if !pv_node && !in_check {
+        if self.limits.selective && !pv_node && !in_check {
             let static_eval = evaluate_with_style(board, self.limits.style);
             // Reverse futility pruning: this close to the horizon, a position whose static
             // score beats beta by a margin that grows with the remaining depth is very
@@ -1175,7 +1183,8 @@ impl Searcher {
                 // that beats alpha there earns a full-depth scout. Captures, promotions,
                 // checking moves, moves made while in check, and the first few moves are
                 // never reduced.
-                let reduction = if depth >= LMR_MIN_DEPTH
+                let reduction = if self.limits.selective
+                    && depth >= LMR_MIN_DEPTH
                     && index >= LMR_MIN_INDEX
                     && !in_check
                     && !is_capture(board, m)
@@ -1722,8 +1731,13 @@ mod tests {
         for fen in fens {
             let board = Board::from_str(fen).unwrap();
             for depth in 1..=2 {
+                // Selective techniques are lossy by design; this test is about the
+                // score-preserving machinery only. (It passed with them on until the
+                // E13 evaluation change happened to trigger reverse futility pruning at
+                // a depth-1 node, which showed that the premise no longer held.)
                 let limits = SearchLimits {
                     depth,
+                    selective: false,
                     ..Default::default()
                 };
                 let mut reference = Searcher::new(limits);
