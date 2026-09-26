@@ -12,7 +12,7 @@ the dependency analysis: each item unblocks the next measurement. Status says wh
 | 3 | correctness floor: rules, draw detection, fuzzing, GUI rules | **done** | 7 Python generator bugs fixed; crate UB guarded; `tests/fuzz.rs` |
 | 4 | tactical + benchmark suites | **partial** | 22 proven mates; fixed-depth benchmark JSON. *Missing:* non-mate tactics and positional suites |
 | 5 | tournament driver, SPRT, Elo | **done** | `arena`, `stats`, `tools/sprt.sh`; E4 (140/140 vs baseline) |
-| 6 | search strength, each SPRT-gated | **in progress** | interior PVS (SPRT running), null-move (committed, SPRT next) |
+| 6 | search strength, each SPRT-gated | **in progress** | null-move +25.5 Elo (E6); PVS inconclusive (E5); LMR next |
 | 7 | split `lib.rs`; `Evaluator` trait; tapered eval; passed-pawn fix | planned | — |
 | 8 | own move generator with incremental make/unmake | planned | prerequisite for NNUE accumulators |
 | 9 | Lazy SMP over a shared lock-free TT | planned | root split removed as harmful (E3) |
@@ -30,8 +30,8 @@ tests), measured by nodes at fixed depth, then SPRT'd against the previous commi
 
 | technique | status |
 |---|---|
-| interior PVS | SPRT running (non-regression) |
-| null-move pruning | committed locally; SPRT queued |
+| interior PVS | inconclusive (−5.8 ± 13.0); kept as LMR infrastructure (E5) |
+| null-move pruning | **accepted**: +25.5 ± 18.2 Elo (E6) |
 | late move reductions | next; needs PVS |
 | move ordering: good captures > killers > history > bad captures | planned |
 | check extension | planned |
