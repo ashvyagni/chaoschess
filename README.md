@@ -1,99 +1,86 @@
 # Crazy Chess
 
-Crazy Chess is a chess-engine project with a fast, testable Rust core and a
-Python prototype retained for experimentation and model training. Its first
-distinctive identity is **Chaos style**: a deterministic search personality
-that values initiative, mobility, checks, and king pressure instead of only
-material.
+A UCI chess engine in Rust, with a PySide6 GUI. Its distinctive idea is a **Chaos**
+personality: a deterministic alternative decision policy, not a random one. The project is
+run as an evidence-first research platform: every change is measured, and every strength
+claim comes with its opponent, time control, sample size and confidence interval.
 
-## Why the stack changed
+> **Strength, honestly stated.** The engine is unrated: nothing here is anchored to a
+> public rating list. What *is* measured: the current engine beat the version this project
+> started from **140–0** (Elo ≥ +566 at 95%, Wilson). The original code could not finish
+> a one-ply search in a normal middlegame. See `experiments/E4` and `docs/TOURNAMENTS.md`.
 
-The original implementation is a useful prototype, but Python is a poor
-runtime for the engine's hottest loops: legal move generation, board copying,
-tree search, and self-play. The new boundary is:
-
-- **Rust**: authoritative board state, legal moves, style-aware evaluation,
-  iterative deepening alpha-beta search, quiescence search, transposition
-  tables, perft, and UCI protocol.
-- **Python**: research/training playground until a model-backed evaluator is
-  stable enough to expose through a Rust FFI or service boundary.
-- **PySide6**: existing desktop UI, to be migrated to UCI in a later slice
-  instead of coupling UI work to engine correctness.
-
-The dependency on the well-tested `chess` crate is deliberate: chess rules are
-an invariant-heavy boundary, so the first migration prioritizes correctness
-and known perft counts over duplicating an untested move generator.
-
-## Run the Rust engine
-
-```bash
-cargo test
-cargo run --release
-```
-
-The binary speaks a minimal UCI-compatible protocol:
-
-```text
-uci
-isready
-setoption name Style value Chaos
-position startpos moves e2e4 e7e5
-go depth 6
-quit
-```
-
-The engine supports `Classical` and `Chaos` styles, `Hash` sizing, node
-budgets, and `movetime` limits through UCI. `Chaos` is not random: identical
-positions and limits produce identical moves.
-
-Search emits UCI telemetry such as completed depth, node count, and
-centipawn score. The evaluator combines material, piece-square tables, pawn
-structure and passed pawns, bishop pair, king shelter/pressure, and
-style-specific mobility and initiative terms. Search uses deterministic
-iterative deepening with aspiration windows/PVS; `Threads` parallelizes root
-moves with stable tie-breaking.
-
-To compare the built-in personalities over a deterministic
-game:
+## Quick start
 
 ```bash
 cargo build --release
-python3 tools/tournament.py --depth 1 --plies 40
+cargo test                      # Rust: unit, tactics, UCI, fuzz, arena
+python3 -m unittest discover -s tests_py   # Python: rules + offscreen GUI smoke test
 ```
 
-For rule validation, the engine also exposes a `perft` command:
+Run the engine in any UCI GUI, or by hand:
 
 ```text
-position startpos
-perft 4
+$ target/release/crazy-chess
+uci
+setoption name Style value Chaos
+position startpos moves e2e4 e7e5
+go wtime 60000 btime 60000 winc 1000 binc 1000
 ```
 
-Expected result: `nodes 197281`.
+Options: `Style` (Classical / Chaos), `Hash` (MB), `Threads` (accepted; search is
+single-threaded until Lazy SMP), `Move Overhead`, `Clear Hash`. Non-standard helpers:
+`bench <depth>`, `perft <depth>`, `d`.
 
-The UCI surface also supports `setoption name Threads value N`, `go nodes N`,
-`go movetime N`, `go infinite` (bounded by the configured depth), and a
-`bench [depth]` command for reproducible local measurements. `stop` is
-accepted as a protocol command; searches are bounded by node/time limits and
-the current synchronous driver cannot interrupt an already-running `go
-infinite` call.
+Play a match between two engine builds:
 
-## Existing Python prototype
+```bash
+target/release/arena --engine name=a,cmd=target/release/crazy-chess \
+                     --engine name=b,cmd=target/release/crazy-chess,opt.Style=Chaos \
+                     --tc 2+0.02 --games 200
+```
 
-The Python files (`board.py`, `moves.py`, `mcts.py`, `neural_net.py`, and
-`train.py`) remain available as research code. They are not the authoritative
-engine yet: they currently lack regression tests, a stable model artifact, and
-an interoperability boundary. The next migration slice should make the GUI
-launch the Rust UCI process and then replace the NumPy MLP with a real training
-framework such as PyTorch.
+Launch the GUI:
 
-## Current scope and honest limitations
+```bash
+python3 main.py
+```
 
-The Rust core is a reliable, testable engine platform, not a claimed
-grandmaster-strength engine. It now uses iterative deepening, quiescence,
-bounded transposition tables, piece-square and pawn-structure evaluation,
-king-safety terms, deterministic PVS-style ordering, and deterministic root
-parallelism. Opening books, NN evaluation, self-play training, and release
-packaging remain planned because they require data, compute, and external
-rating validation rather than just source code. The UI launches the Rust UCI
-engine when the optimized binary is available, with `cargo run --release` as
-a development fallback.
+If the project lives in an iCloud-synced folder, the GUI will explain why Qt can't load
+its plugins from `.venv`: iCloud hides dot-folders. The fix is a virtual environment
+outside iCloud.
+
+## What works (tested)
+
+- **Search:** iterative deepening, PVS (root and interior), aspiration windows, a
+  transposition table (key-verified, mate-score-correct, generation-aged), guarded
+  null-move pruning, quiescence with SEE pruning and bounded checks, history heuristic,
+  and threefold / fifty-move / insufficient-material detection.
+- **UCI:** clock time management, `stop` and `isready` mid-search (search on a worker
+  thread), PV and `score mate` reporting, strict FEN validation.
+- **Measurement:** `arena` match runner (paired openings, parallel, SPRT, PGN, JSON with
+  binary SHA-256), Elo with pentanomial, trinomial and Wilson intervals, a
+  machine-verified mate suite, fixed-depth benchmarks, and a UCI conformance probe.
+- **Correctness:** perft against published counts, a differential move-generator oracle,
+  and deterministic fuzzing of the search and the UCI input.
+
+## Documentation
+
+| | |
+|---|---|
+| `MASTER_ENGINE_AUDIT.md` | the audit this work started from, with errata |
+| `CHANGELOG.md` | what each milestone changed, with measurements |
+| `docs/ARCHITECTURE.md` | modules, design decisions, structural debt |
+| `docs/TOURNAMENTS.md` | how strength is measured and what may be claimed |
+| `docs/BENCHMARKS.md` | non-game measurements and their history |
+| `docs/ROADMAP.md` | prioritised plan with live status |
+| `experiments/` | one file per experiment: hypothesis, method, result, conclusion (failures kept) |
+
+## Not implemented yet
+
+Neural evaluation, self-play training, opening book, tablebases, multi-threaded search,
+the personality framework beyond two styles, research telemetry. See
+`docs/ROADMAP.md`, including what needs resources this repository doesn't have.
+
+The Python files `mcts.py`, `neural_net.py` and `train.py` are an unconnected
+NumPy/MCTS prototype, kept as research code.
