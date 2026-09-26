@@ -27,20 +27,6 @@ const PV_ROWS: usize = MAX_DEPTH as usize + 2;
 const NULL_MOVE_MIN_DEPTH: u8 = 3;
 /// Null-move search depth is `depth - 1 - (NULL_MOVE_BASE_REDUCTION + depth / 6)`.
 const NULL_MOVE_BASE_REDUCTION: u8 = 3;
-/// Late move reductions apply from this remaining depth...
-const LMR_MIN_DEPTH: u8 = 3;
-/// ...to moves at this index or later in the ordered list (0-based).
-const LMR_MIN_INDEX: usize = 3;
-
-/// How many plies to reduce a late quiet move: grows with both depth and move index
-/// (the usual logarithmic shape), one ply less at PV nodes, and never so much that the
-/// reduced search would skip straight to quiescence.
-fn lmr_reduction(depth: u8, index: usize, pv_node: bool) -> u8 {
-    let r = 0.75 + (f64::from(depth)).ln() * (index as f64).ln() / 2.25;
-    let r = (r as u8).saturating_sub(u8::from(pv_node)).max(1);
-    r.min(depth.saturating_sub(2))
-}
-
 /// Ceiling on history-heuristic values. History persists across iterative-deepening
 /// iterations, so without a bound it grows until it outranks the TT move and captures.
 const HISTORY_MAX: i32 = 16_384;
@@ -1113,26 +1099,7 @@ impl Searcher {
             let value = if index == 0 {
                 self.search_child(board, m, &child, depth - 1, alpha, beta, ply + 1)
             } else {
-                // Late move reductions: with good ordering, quiet moves far down the list
-                // rarely matter, so they are first scouted at reduced depth. Only a move
-                // that beats alpha there earns a full-depth scout. Captures, promotions,
-                // checking moves, moves made while in check, and the first few moves are
-                // never reduced.
-                let reduction = if depth >= LMR_MIN_DEPTH
-                    && index >= LMR_MIN_INDEX
-                    && !in_check
-                    && !is_capture(board, m)
-                    && m.get_promotion().is_none()
-                    && child.checkers() == &chess::EMPTY
-                {
-                    lmr_reduction(depth, index, pv_node)
-                } else {
-                    0
-                };
-                let mut scout = self.search_child(board, m, &child, depth - 1 - reduction, alpha, alpha + 1, ply + 1);
-                if reduction > 0 && scout > alpha && !self.stopped {
-                    scout = self.search_child(board, m, &child, depth - 1, alpha, alpha + 1, ply + 1);
-                }
+                let scout = self.search_child(board, m, &child, depth - 1, alpha, alpha + 1, ply + 1);
                 if scout > alpha && scout < beta && !self.stopped {
                     self.search_child(board, m, &child, depth - 1, alpha, beta, ply + 1)
                 } else {
