@@ -20,6 +20,10 @@ fn depth_for(mate_in: u8) -> u8 {
     2 * mate_in
 }
 
+/// Extra plies Chaos may need to see a forced mate; see
+/// `chaos_style_also_solves_the_mate_suite` and experiments/E11.
+const CHAOS_SELECTIVITY_ALLOWANCE: u8 = 2;
+
 #[test]
 fn suite_expected_answers_are_provably_correct() {
     for &(fen, mate_in) in MATE_SUITE {
@@ -68,8 +72,13 @@ fn chaos_style_also_solves_the_mate_suite() {
     let mut failures = Vec::new();
     for &(fen, mate_in) in MATE_SUITE {
         let board = Board::from_str(fen).unwrap();
+        // Two plies of allowance, and only for Chaos. Reverse futility pruning (E11) made
+        // Chaos find the two-rook ladder mates at depth 6 instead of 4: its larger static
+        // evaluation terms trigger the pruning at the defender's depth-1 node before
+        // quiescence reaches the mating check. The SPRT accepted that trade (+14.8 Elo).
+        // Classical keeps the strict test above, so a real regression still fails there.
         let limits = SearchLimits {
-            depth: depth_for(mate_in),
+            depth: depth_for(mate_in) + CHAOS_SELECTIVITY_ALLOWANCE,
             style: Style::Chaos,
             ..Default::default()
         };

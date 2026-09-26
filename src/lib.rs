@@ -23,6 +23,10 @@ const MATE_THRESHOLD: i32 = MATE - 1_000;
 pub const MAX_DEPTH: u8 = 64;
 /// Rows in the triangular principal-variation table; main-search ply never exceeds MAX_DEPTH.
 const PV_ROWS: usize = MAX_DEPTH as usize + 2;
+/// Reverse futility pruning applies at this remaining depth or less...
+const RFP_MAX_DEPTH: u8 = 6;
+/// ...when the static eval beats beta by this many centipawns per ply of depth.
+const RFP_MARGIN: i32 = 90;
 /// Move-ordering bands; see `Searcher::ordered`.
 const ORDER_TT: i64 = 4_000_000;
 const ORDER_GOOD_CAPTURE: i64 = 3_000_000;
@@ -844,7 +848,7 @@ impl Searcher {
     /// - not twice in a row;
     /// - only when the static evaluation already reaches beta;
     /// - a mate score from the reduced search is not trusted: `beta` is returned instead.
-    fn try_null_move(&mut self, board: &Board, depth: u8, beta: i32, ply: u8) -> Option<i32> {
+    fn try_null_move(&mut self, board: &Board, static_eval: i32, depth: u8, beta: i32, ply: u8) -> Option<i32> {
         if depth < NULL_MOVE_MIN_DEPTH || self.null_moves.last() == Some(&true) {
             return None;
         }
@@ -853,7 +857,7 @@ impl Searcher {
         if side & !pawns_and_king == chess::EMPTY {
             return None;
         }
-        if evaluate_with_style(board, self.limits.style) < beta {
+        if static_eval < beta {
             return None;
         }
         let passed = board.null_move()?;
@@ -1129,7 +1133,18 @@ impl Searcher {
         let in_check = board.checkers() != &chess::EMPTY;
         let pv_node = beta - alpha > 1;
         if !pv_node && !in_check {
-            if let Some(cutoff) = self.try_null_move(board, depth, beta, ply) {
+            let static_eval = evaluate_with_style(board, self.limits.style);
+            // Reverse futility pruning: this close to the horizon, a position whose static
+            // score beats beta by a margin that grows with the remaining depth is very
+            // unlikely to drop below beta within that depth. Return without searching.
+            // Mate-range betas are excluded, because a static score can't prove a mate.
+            if depth <= RFP_MAX_DEPTH
+                && beta.abs() < MATE_THRESHOLD
+                && static_eval - RFP_MARGIN * i32::from(depth) >= beta
+            {
+                return static_eval;
+            }
+            if let Some(cutoff) = self.try_null_move(board, static_eval, depth, beta, ply) {
                 return cutoff;
             }
         }
