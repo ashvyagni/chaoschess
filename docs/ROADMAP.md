@@ -33,7 +33,7 @@ tests), measured by nodes at fixed depth, then SPRT'd against the previous commi
 | interior PVS | inconclusive (−5.8 ± 13.0); kept as LMR infrastructure (E5) |
 | null-move pruning | **accepted**: +25.5 ± 18.2 Elo (E6) |
 | late move reductions | **rejected** first attempt (E7: −6.2 ± 16.3); retry after ordering |
-| move ordering: good captures > killers > history > bad captures | next (E7 points here) |
+| move ordering: good captures > killers > history > bad captures | **accepted**: +76.7 ± 30.5 Elo (E8) |
 | check extension | planned |
 | reverse futility / futility / late move pruning | planned |
 | mate distance pruning, IIR | planned |

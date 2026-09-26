@@ -111,6 +111,7 @@ game, so a rebuild mid-test can't change what is being tested. Results go to
 | E5 | interior PVS `c8576f3` vs `74fcfb6` | 2+0.02 | 1200 | −5.8 ± 13.0, inconclusive (non-regression SPRT, LLR −0.18) |
 | E6 | null-move pruning `63b3bce` vs `c8576f3` | 2+0.02 | 656 | **+25.5 ± 18.2, SPRT accepted H1** (LOS 99.6%) |
 | E7 | late move reductions `9d4355f` vs `63b3bce` | 2+0.02 | 958 | −6.2 ± 16.3, **SPRT accepted H0 → reverted** |
+| E8 | move ordering (killers, SEE bands) `e8b05bd` vs `42eae59` | 2+0.02 | 244 | **+76.7 ± 30.5, SPRT accepted H1** |
 
 More rows are added as SPRTs finish. The full records are in `matches/`.
 
