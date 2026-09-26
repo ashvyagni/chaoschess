@@ -1,5 +1,6 @@
 use chess::{
-    get_bishop_moves, get_king_moves, get_knight_moves, get_pawn_attacks, get_rook_moves,
+    get_bishop_moves, get_file, get_king_moves, get_knight_moves, get_pawn_attacks, get_rook_moves,
+    ALL_PIECES,
     BitBoard, Board, BoardStatus, ChessMove, Color, File, MoveGen, Piece, Rank, Square,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -326,20 +327,24 @@ pub fn evaluate_with_style(board: &Board, style: Style) -> i32 {
     let mut score = 0;
     let mut files = [[0u8; 8]; 2];
     let mut bishops = [0u8; 2];
-    for square in !chess::EMPTY {
-        if let Some(piece) = board.piece_on(square) {
-            let white = board.color_on(square) == Some(Color::White);
-            let side = usize::from(!white);
-            let rank = square.get_rank().to_index();
-            let file = square.get_file().to_index();
-            let relative_rank = if white { rank } else { 7 - rank };
-            let value = PIECE_VALUES[piece.to_index()] + piece_square(piece, relative_rank, file);
-            score += if white { value } else { -value };
-            if piece == Piece::Pawn {
-                files[side][file] += 1;
-            }
-            if piece == Piece::Bishop {
-                bishops[side] += 1;
+    // Iterate occupied squares per piece and colour, not all 64 squares with a piece_on /
+    // color_on lookup each (profiled: evaluation was ~32% of search time).
+    for (side, color) in [Color::White, Color::Black].into_iter().enumerate() {
+        let white = side == 0;
+        let own = *board.color_combined(color);
+        for piece in ALL_PIECES {
+            for square in *board.pieces(piece) & own {
+                let rank = square.get_rank().to_index();
+                let file = square.get_file().to_index();
+                let relative_rank = if white { rank } else { 7 - rank };
+                let value = PIECE_VALUES[piece.to_index()] + piece_square(piece, relative_rank, file);
+                score += if white { value } else { -value };
+                if piece == Piece::Pawn {
+                    files[side][file] += 1;
+                }
+                if piece == Piece::Bishop {
+                    bishops[side] += 1;
+                }
             }
         }
     }
@@ -428,10 +433,7 @@ fn pawn_structure(files: &[[u8; 8]; 2]) -> i32 {
 
 fn passed_pawn_score(board: &Board, files: &[[u8; 8]; 2]) -> i32 {
     let mut score = 0;
-    for square in !chess::EMPTY {
-        if board.piece_on(square) != Some(Piece::Pawn) {
-            continue;
-        }
+    for square in *board.pieces(Piece::Pawn) {
         let white = board.color_on(square) == Some(Color::White);
         let side = usize::from(!white);
         let rank = square.get_rank().to_index();
@@ -450,26 +452,23 @@ fn passed_pawn_score(board: &Board, files: &[[u8; 8]; 2]) -> i32 {
 
 fn king_safety(board: &Board, color: Color) -> i32 {
     let king = board.king_square(color);
-    let file = king.get_file().to_index();
-    let rank = king.get_rank().to_index();
-    let mut score = 0;
-    for f in file.saturating_sub(1)..=(file + 1).min(7) {
-        for r in rank.saturating_sub(1)..=(rank + 1).min(7) {
-            if f == file && r == rank {
-                continue;
-            }
-            let sq = Square::make_square(Rank::from_index(r), File::from_index(f));
-            if board.color_on(sq) == Some(color) && board.piece_on(sq) == Some(Piece::Pawn) {
-                score += 8;
-            }
-        }
-    }
+    // Pawn shelter: own pawns on the squares around the king.
+    let shelter = get_king_moves(king) & *board.pieces(Piece::Pawn) & *board.color_combined(color);
+    let score = 8 * shelter.popcnt() as i32;
+    // Pressure: legal moves, in the null-moved position, that land on the king's file (the
+    // king's own square included). The iterator mask restricts iteration to those
+    // destinations, giving the same count as filtering every move, without walking
+    // them all.
+    //
+    // Known quirk, kept deliberately so this change stays behaviour-identical: when
+    // `color` is *not* the side to move, the null-moved board hands the move to `color`
+    // itself, so this counts `color`'s own moves onto its king file, not the enemy's.
+    // In check, `null_move()` is None and the unmodified board is used (audit §G.10).
+    // Fixing either is an evaluation change and needs its own SPRT.
     let enemy = board.null_move().unwrap_or(*board);
-    score
-        - MoveGen::new_legal(&enemy)
-            .filter(|m| m.get_dest() == king || m.get_dest().get_file() == king.get_file())
-            .count() as i32
-            * 3
+    let mut moves = MoveGen::new_legal(&enemy);
+    moves.set_iterator_mask(get_file(king.get_file()));
+    score - moves.count() as i32 * 3
 }
 fn checking_moves(board: &Board) -> i32 {
     MoveGen::new_legal(board)
