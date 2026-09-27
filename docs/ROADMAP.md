@@ -13,7 +13,7 @@ the dependency analysis: each item unblocks the next measurement. Status says wh
 | 4 | tactical + benchmark suites | **partial** | 22 proven mates; fixed-depth benchmark JSON. *Missing:* non-mate tactics and positional suites |
 | 5 | tournament driver, SPRT, Elo | **done** | `arena`, `stats`, `tools/sprt.sh`; E4 (140/140 vs baseline) |
 | 6 | search strength, each SPRT-gated | **in progress** | null move +25.5 (E6), ordering +76.7 (E8), LMR +30.7 (E9); PVS inconclusive (E5) |
-| 7 | split `lib.rs`; `Evaluator` trait; tapered eval; passed-pawn fix | planned | — |
+| 7 | split `lib.rs`; `Evaluator` trait; tapered eval; passed-pawn fix | partial | passed-pawn fix (E14), king-safety fix (E13); split and tapering pending |
 | 8 | own move generator with incremental make/unmake | planned | prerequisite for NNUE accumulators |
 | 9 | Lazy SMP over a shared lock-free TT | planned | root split removed as harmful (E3) |
 | 10 | personality layer: Chaos as a parameterised, explainable policy | planned | — |

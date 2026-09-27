@@ -1,5 +1,5 @@
 use chess::{
-    get_bishop_moves, get_file, get_king_moves, get_knight_moves, get_pawn_attacks, get_rook_moves,
+    get_adjacent_files, get_bishop_moves, get_file, get_king_moves, get_knight_moves, get_pawn_attacks, get_rook_moves,
     ALL_PIECES,
     BitBoard, Board, BoardStatus, ChessMove, Color, File, MoveGen, Piece, Rank, Square,
 };
@@ -356,7 +356,7 @@ pub fn evaluate_with_style(board: &Board, style: Style) -> i32 {
             }
         }
     }
-    score += pawn_structure(&files) + passed_pawn_score(board, &files);
+    score += pawn_structure(&files) + passed_pawn_score(board);
     score += if bishops[0] >= 2 { 28 } else { 0 } - if bishops[1] >= 2 { 28 } else { 0 };
     score += king_safety(board, Color::White) - king_safety(board, Color::Black);
     if style == Style::Chaos {
@@ -439,17 +439,26 @@ fn pawn_structure(files: &[[u8; 8]; 2]) -> i32 {
     score
 }
 
-fn passed_pawn_score(board: &Board, files: &[[u8; 8]; 2]) -> i32 {
+/// Bonus for passed pawns: no enemy pawn *ahead* of the pawn on its own or an adjacent
+/// file. The audited version (§G.8) counted any enemy pawn on those files, including
+/// ones behind the pawn that can never stop it (experiments/E14).
+fn passed_pawn_score(board: &Board) -> i32 {
+    let pawns = *board.pieces(Piece::Pawn);
+    let white_pawns = pawns & *board.color_combined(Color::White);
+    let black_pawns = pawns & *board.color_combined(Color::Black);
     let mut score = 0;
-    for square in *board.pieces(Piece::Pawn) {
-        let white = board.color_on(square) == Some(Color::White);
-        let side = usize::from(!white);
+    for square in pawns {
+        let white = white_pawns & BitBoard::from_square(square) != chess::EMPTY;
         let rank = square.get_rank().to_index();
-        let file = square.get_file().to_index();
-        let blocked = [file.saturating_sub(1), file, (file + 1).min(7)]
-            .into_iter()
-            .any(|f| files[1 - side][f] > 0);
-        if !blocked {
+        let file = square.get_file();
+        let span = get_adjacent_files(file) | get_file(file);
+        let ahead = if white {
+            span & !BitBoard::new((1u64 << (8 * (rank + 1))) - 1)
+        } else {
+            span & BitBoard::new((1u64 << (8 * rank)) - 1)
+        };
+        let blockers = if white { black_pawns } else { white_pawns };
+        if ahead & blockers == chess::EMPTY {
             let advance = if white { rank } else { 7 - rank };
             let bonus = 10 + advance as i32 * 8;
             score += if white { bonus } else { -bonus };
@@ -1983,6 +1992,27 @@ mod tests {
             .unwrap();
         assert_eq!(result.best_move.to_string(), "f7g7");
         assert_eq!(mate_in_moves(result.score), Some(1));
+    }
+
+    /// Regression for §G.8 / E14: an enemy pawn *behind* a pawn cannot stop it.
+    /// Positions are built so exactly one pawn is passed, making each expected value
+    /// exact: bonus = 10 + 8 * (ranks advanced).
+    #[test]
+    fn passed_pawns_ignore_enemy_pawns_behind() {
+        // White e5 is passed: black d4 is behind it. Black d4 is blocked by white d3, and
+        // white d3 by black d4. Only e5 scores: 10 + 8*4 = 42. The audited code
+        // scored 0 here (d4 on an adjacent file counted as blocking e5).
+        let behind = Board::from_str("4k3/8/8/4P3/3p4/3P4/8/4K3 w - - 0 1").unwrap();
+        assert_eq!(passed_pawn_score(&behind), 42);
+        // Black d7 is *ahead* of e5 on an adjacent file: e5 is not passed, and e5 blocks
+        // d7 in turn. Nothing scores.
+        let ahead = Board::from_str("4k3/3p4/8/4P3/8/8/8/4K3 w - - 0 1").unwrap();
+        assert_eq!(passed_pawn_score(&ahead), 0);
+        // Colour symmetry: mirrored lone pawns score as exact negatives.
+        let white = Board::from_str("4k3/8/8/8/3P4/8/8/4K3 w - - 0 1").unwrap();
+        let black = Board::from_str("4k3/8/8/3p4/8/8/8/4K3 w - - 0 1").unwrap();
+        assert_eq!(passed_pawn_score(&white), 10 + 8 * 3);
+        assert_eq!(passed_pawn_score(&white), -passed_pawn_score(&black));
     }
 
     #[test]
