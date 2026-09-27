@@ -463,20 +463,16 @@ fn king_safety(board: &Board, color: Color) -> i32 {
     // Pawn shelter: own pawns on the squares around the king.
     let shelter = get_king_moves(king) & *board.pieces(Piece::Pawn) & *board.color_combined(color);
     let score = 8 * shelter.popcnt() as i32;
-    // Pressure: legal moves, in the null-moved position, that land on the king's file (the
-    // king's own square included). The iterator mask restricts iteration to those
-    // destinations, giving the same count as filtering every move, without walking
-    // them all.
-    //
-    // Known quirk, kept deliberately so this change stays behaviour-identical: when
-    // `color` is *not* the side to move, the null-moved board hands the move to `color`
-    // itself, so this counts `color`'s own moves onto its king file, not the enemy's.
-    // In check, `null_move()` is None and the unmodified board is used (audit §G.10).
-    // Fixing either is an evaluation change and needs its own SPRT.
-    let enemy = board.null_move().unwrap_or(*board);
-    let mut moves = MoveGen::new_legal(&enemy);
-    moves.set_iterator_mask(get_file(king.get_file()));
-    score - moves.count() as i32 * 3
+    // Pressure: enemy attacks on the squares of the king's file, from attack maps. The
+    // previous version counted legal moves in a null-moved position. For the side not to
+    // move, that counted its *own* moves onto its king file, and in check it silently used
+    // the wrong position (see experiments/E13).
+    let enemy = *board.color_combined(!color);
+    let occupied = *board.combined();
+    let pressure: u32 = get_file(king.get_file())
+        .map(|square| (attackers_to(board, square, occupied) & enemy).popcnt())
+        .sum();
+    score - pressure as i32 * 3
 }
 fn checking_moves(board: &Board) -> i32 {
     MoveGen::new_legal(board)
