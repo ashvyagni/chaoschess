@@ -766,6 +766,41 @@ mod tests {
         }
     }
 
+    /// `gives_check` must agree exactly with playing the move, for every legal move of
+    /// many random positions (random playouts reach promotions, en passant, castling and
+    /// discovered checks).
+    #[test]
+    fn gives_check_agrees_with_playing_the_move() {
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let mut checked = 0;
+        let mut checks = 0;
+        for fen in [STARTPOS, "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1"] {
+            for _ in 0..80 {
+                let mut board = Board::from_str(fen).unwrap();
+                for _ in 0..(next() % 60) {
+                    let moves: Vec<_> = MoveGen::new_legal(&board).collect();
+                    if moves.is_empty() {
+                        break;
+                    }
+                    for m in &moves {
+                        let played = board.make_move_new(*m).checkers() != &chess::EMPTY;
+                        assert_eq!(gives_check(&board, *m), played, "{board} {m}");
+                        checked += 1;
+                        checks += usize::from(played);
+                    }
+                    board = board.make_move_new(moves[(next() % moves.len() as u64) as usize]);
+                }
+            }
+        }
+        assert!(checked > 50_000 && checks > 500, "coverage: {checked} moves, {checks} checks");
+    }
+
     #[test]
     fn evaluation_rewards_bishop_pair() {
         let bishops = Board::from_str("4k3/8/8/8/8/8/2BB4/4K3 w - - 0 1").unwrap();

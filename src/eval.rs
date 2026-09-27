@@ -81,13 +81,14 @@ pub fn evaluate_with_style(board: &Board, style: Style) -> i32 {
     score += king_safety(board, Color::White) - king_safety(board, Color::Black);
     if style == Style::Chaos {
         let black_board = board.null_move().unwrap_or(*board);
-        let mobility =
-            MoveGen::new_legal(board).len() as i32 - MoveGen::new_legal(&black_board).len() as i32;
-        let checks = checking_moves(board) - checking_moves(&black_board);
+        let own = move_features(board);
+        let other = move_features(&black_board);
+        let mobility = own.moves - other.moves;
+        let checks = own.checks - other.checks;
         // These terms are relative to the side to move, but `score` is built from White's
         // point of view and negated at the end for Black. Adding them unconverted rewarded
         // the *opponent's* mobility and checks whenever Black was to move (E17).
-        let chaos = mobility * 3 + checks * 8 + center_control(board) * 2;
+        let chaos = mobility * 3 + checks * 8 + own.center * 2;
         score += if board.side_to_move() == Color::White { chaos } else { -chaos };
     }
     if board.side_to_move() == Color::White {
@@ -246,19 +247,68 @@ pub(crate) fn king_safety(board: &Board, color: Color) -> i32 {
     score - pressure as i32 * 3
 }
 
-pub(crate) fn checking_moves(board: &Board) -> i32 {
-    MoveGen::new_legal(board)
-        .filter(|m| board.make_move_new(*m).checkers() != &chess::EMPTY)
-        .count() as i32
+/// Per-side move statistics for the Chaos terms, gathered in one pass over the legal
+/// moves. This replaced eight move generations per evaluation (two for mobility, two for
+/// checks, four for centre control), plus playing every move on a board copy to test for
+/// check. The values are identical (verified by identical search trees).
+pub(crate) struct MoveFeatures {
+    pub(crate) moves: i32,
+    pub(crate) checks: i32,
+    /// Moves landing on d4, e4, d5 or e5.
+    pub(crate) center: i32,
 }
 
-pub(crate) fn center_control(board: &Board) -> i32 {
-    [Square::D4, Square::E4, Square::D5, Square::E5]
-        .into_iter()
-        .map(|sq| {
-            MoveGen::new_legal(board)
-                .filter(|m| m.get_dest() == sq)
-                .count() as i32
-        })
-        .sum()
+pub(crate) fn move_features(board: &Board) -> MoveFeatures {
+    const CENTER: u64 = (1 << 27) | (1 << 28) | (1 << 35) | (1 << 36);
+    let mut features = MoveFeatures { moves: 0, checks: 0, center: 0 };
+    for m in MoveGen::new_legal(board) {
+        features.moves += 1;
+        if gives_check(board, m) {
+            features.checks += 1;
+        }
+        if CENTER & (1 << m.get_dest().to_index()) != 0 {
+            features.center += 1;
+        }
+    }
+    features
+}
+
+/// Whether the legal move `m` gives check, from bitboards rather than by playing it.
+///
+/// A direct check means the moved (or promoted) piece attacks the enemy king from its
+/// destination, given the occupancy after the move. A discovered check means one of our
+/// other sliders sees the king once the origin square is vacated. Castling and en
+/// passant (a rook moving, and a second pawn vanishing) are rare enough that they are
+/// simply played. `gives_check_agrees_with_playing_the_move` checks this against
+/// playing every legal move of hundreds of random positions.
+pub(crate) fn gives_check(board: &Board, m: ChessMove) -> bool {
+    let src = m.get_source();
+    let dest = m.get_dest();
+    let Some(moving) = board.piece_on(src) else { return false };
+    let castling = moving == Piece::King
+        && (src.get_file().to_index() as i32 - dest.get_file().to_index() as i32).abs() == 2;
+    if castling || is_en_passant(board, m) {
+        return board.make_move_new(m).checkers() != &chess::EMPTY;
+    }
+    let us = board.side_to_move();
+    let king = board.king_square(!us);
+    let king_bb = BitBoard::from_square(king);
+    let src_bb = BitBoard::from_square(src);
+    let occupied = (*board.combined() & !src_bb) | BitBoard::from_square(dest);
+    let piece = m.get_promotion().unwrap_or(moving);
+    let direct = match piece {
+        Piece::Pawn => get_pawn_attacks(dest, us, king_bb),
+        Piece::Knight => get_knight_moves(dest) & king_bb,
+        Piece::Bishop => get_bishop_moves(dest, occupied) & king_bb,
+        Piece::Rook => get_rook_moves(dest, occupied) & king_bb,
+        Piece::Queen => (get_bishop_moves(dest, occupied) | get_rook_moves(dest, occupied)) & king_bb,
+        Piece::King => chess::EMPTY,
+    };
+    if direct != chess::EMPTY {
+        return true;
+    }
+    let ours = *board.color_combined(us) & !src_bb;
+    let diagonal = (*board.pieces(Piece::Bishop) | *board.pieces(Piece::Queen)) & ours;
+    let straight = (*board.pieces(Piece::Rook) | *board.pieces(Piece::Queen)) & ours;
+    (get_bishop_moves(king, occupied) & diagonal) | (get_rook_moves(king, occupied) & straight) != chess::EMPTY
 }
