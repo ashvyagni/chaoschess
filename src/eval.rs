@@ -49,6 +49,7 @@ pub fn evaluate_with_style(board: &Board, style: Style) -> i32 {
     let mut score = 0;
     let mut files = [[0u8; 8]; 2];
     let mut bishops = [0u8; 2];
+    let phase = game_phase(board);
     // Iterate occupied squares per piece and colour, not all 64 squares with a piece_on /
     // color_on lookup each (profiled: evaluation was ~32% of search time).
     for (side, color) in [Color::White, Color::Black].into_iter().enumerate() {
@@ -59,7 +60,12 @@ pub fn evaluate_with_style(board: &Board, style: Style) -> i32 {
                 let rank = square.get_rank().to_index();
                 let file = square.get_file().to_index();
                 let relative_rank = if white { rank } else { 7 - rank };
-                let value = PIECE_VALUES[piece.to_index()] + piece_square(piece, relative_rank, file);
+                let positional = if piece == Piece::King {
+                    tapered_king(relative_rank * 8 + file, phase)
+                } else {
+                    piece_square(piece, relative_rank, file)
+                };
+                let value = PIECE_VALUES[piece.to_index()] + positional;
                 score += if white { value } else { -value };
                 if piece == Piece::Pawn {
                     files[side][file] += 1;
@@ -85,6 +91,37 @@ pub fn evaluate_with_style(board: &Board, style: Style) -> i32 {
     } else {
         -score
     }
+}
+
+/// Full-material phase: 4 knights and 4 bishops (1 each), 4 rooks (2), 2 queens (4).
+pub(crate) const MAX_PHASE: i32 = 24;
+
+/// How much middlegame is left: `MAX_PHASE` with all pieces on the board, 0 with only
+/// kings and pawns. Promotions can push the raw sum above the maximum, so it is clamped.
+pub(crate) fn game_phase(board: &Board) -> i32 {
+    let count = |p: Piece| board.pieces(p).popcnt() as i32;
+    (count(Piece::Knight) + count(Piece::Bishop) + 2 * count(Piece::Rook) + 4 * count(Piece::Queen))
+        .min(MAX_PHASE)
+}
+
+/// King placement, blended by phase: shelter in the middlegame, centralisation in the
+/// endgame. The audited evaluation used the middlegame table at every phase, so in a pawn
+/// ending it still told the king to stay in the corner (experiments/E15).
+pub(crate) fn tapered_king(index: usize, phase: i32) -> i32 {
+    // Index = relative rank * 8 + file, own back rank first (the same layout as
+    // `piece_square`). Values follow the widely used simplified-evaluation endgame table.
+    const KING_ENDGAME: [i32; 64] = [
+        -50, -30, -30, -30, -30, -30, -30, -50, //
+        -30, -30, 0, 0, 0, 0, -30, -30, //
+        -30, -10, 20, 30, 30, 20, -10, -30, //
+        -30, -10, 30, 40, 40, 30, -10, -30, //
+        -30, -10, 30, 40, 40, 30, -10, -30, //
+        -30, -10, 20, 30, 30, 20, -10, -30, //
+        -30, -20, -10, 0, 0, -10, -20, -30, //
+        -50, -40, -30, -20, -20, -30, -40, -50,
+    ];
+    let middlegame = piece_square(Piece::King, index / 8, index % 8);
+    (middlegame * phase + KING_ENDGAME[index] * (MAX_PHASE - phase)) / MAX_PHASE
 }
 
 pub(crate) fn piece_square(piece: Piece, rank: usize, file: usize) -> i32 {

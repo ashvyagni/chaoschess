@@ -697,6 +697,25 @@ mod tests {
         assert_eq!(default, search(&Board::default(), SearchLimits { hash_mb: 4, ..limits }).unwrap());
     }
 
+    /// E15: in a pawn ending the king belongs in the centre; with full material it
+    /// belongs behind its pawns. One evaluation must say both.
+    #[test]
+    fn king_placement_depends_on_game_phase() {
+        let eval = |fen: &str| evaluate(&Board::from_str(fen).unwrap());
+        // Pawn ending: a central white king beats a cornered one.
+        assert!(eval("4k3/4p3/8/8/3K4/8/4P3/8 w - - 0 1") > eval("4k3/4p3/8/8/8/8/4P3/K7 w - - 0 1"));
+        // Full material: the castled king (g1) beats one marched to e3.
+        let castled = "r1bq1rk1/pppp1ppp/2n2n2/2b1p3/2B1P3/2N2N2/PPPP1PPP/R1BQ1RK1 w - - 0 1";
+        let exposed = "r1bq1rk1/pppp1ppp/2n2n2/2b1p3/2B1P3/2N1KN2/PPPP1PPP/R1BQ3R w - - 0 1";
+        assert!(eval(castled) > eval(exposed));
+        assert_eq!(game_phase(&Board::default()), MAX_PHASE);
+        assert_eq!(game_phase(&Board::from_str("4k3/4p3/8/8/3K4/8/4P3/8 w - - 0 1").unwrap()), 0);
+        // Blending is exact at the ends.
+        for index in 0..64 {
+            assert_eq!(tapered_king(index, MAX_PHASE), piece_square(Piece::King, index / 8, index % 8));
+        }
+    }
+
     #[test]
     fn evaluation_rewards_bishop_pair() {
         let bishops = Board::from_str("4k3/8/8/8/8/8/2BB4/4K3 w - - 0 1").unwrap();

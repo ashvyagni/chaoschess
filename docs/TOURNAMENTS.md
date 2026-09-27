@@ -118,8 +118,15 @@ game, so a rebuild mid-test can't change what is being tested. Results go to
 | E12 | check extension vs `e326f65` | 2+0.02 | 2000 + 730 | +10.1 ± 10.8 (undecided at cap); non-regression SPRT then **accepted "not worse"** (+18.1 ± 17.6) |
 | E13 | king-safety pressure from attack maps vs `507da0b` | 2+0.02 | 390 | non-regression **accepted** at 376 games; +31.3 ± 23.0 |
 | E14 | passed pawns look only ahead vs `b794a98` | 2+0.02 | 440 | non-regression **accepted** at 426 games; +34.1 ± 22.3 |
+| E15 | tapered king vs `1041462` | 2+0.02 | 116 SPRT + 400 fixed | SPRT **accepted** (+145.8, early-stop inflated); fixed-length **+116.2 ± 27.7** |
 
 More rows are added as SPRTs finish. The full records are in `matches/`.
+
+## Early-stop bias
+
+An SPRT that stops early on a large effect overestimates it. For large accepted gains, a
+fixed-length confirmation on different openings gives the number to quote. In E15 that
+was +146 by SPRT and +116 fixed-length.
 
 ## Operating rule
 
