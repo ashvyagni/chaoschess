@@ -2,7 +2,7 @@
 
 - **Date:** 2026-09-27
 - **Engine:** `ce58776` (all search and eval work through E16)
-- **Status:** bug found and fixed; Chaos is still much weaker than Classical (work continues)
+- **Status:** bug fixed, Chaos sped up 1.43× (identical tree); Chaos now −35 ± 30 vs Classical
 
 ## Why this was measured
 
@@ -56,3 +56,26 @@ Chaos terms cheap without changing their values (identical trees) is the next st
 re-measure. If a gap remains, the Chaos terms themselves need rethinking: "initiative" as
 a coherent, explainable policy (roadmap item 10) rather than raw mobility and check
 counts.
+
+## Follow-up: speed (`35903fa`)
+
+The Chaos terms were rewritten to run one move generation per side, with a bitboard
+`gives_check`. The tree is identical, and Chaos is 1.43× faster (see the commit message
+for the verification). Re-measured on the same terms:
+
+| engine | games | W / L / D | Elo vs Classical (pentanomial 95%) |
+|---|---:|---|---|
+| `ce58776` (sign bug) | 400 | 15 / 321 / 64 | −350.3 ± 44.0 |
+| `0efd21d` (sign fixed) | 400 | 87 / 234 / 79 | −133.9 ± 30.8 |
+| **`35903fa` (sign fixed, 1.43× faster)** | 400 | 121 / 161 / 118 | **−34.9 ± 30.2** |
+
+The last step changed only speed, since the tree is identical, and was worth about +99 Elo.
+That's more than a 1.43× speedup is usually worth (a rough prior would be +40–50 at this
+time control). The uncertainty of the difference between two ±30 estimates is about
+±43, so the result sits roughly 1.3σ above that prior. Plausible at 2+0.02, where depth
+is scarce, but it is recorded as a measurement, not a rule.
+
+**Where Chaos stands:** close to Classical, but still behind (Wilson interval
+[−69, −1]). It still spends about 2.4× Classical's time per node. The directive asks for
+Chaos as a coherent, explainable policy of initiative and king pressure; roadmap item 10
+is to redesign its terms around that, not just around raw move counts.

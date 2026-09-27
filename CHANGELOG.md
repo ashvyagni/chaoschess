@@ -8,6 +8,37 @@ Some milestones landed in commits made by the project owner with short messages.
 detailed descriptions are kept here, so the history stays explainable without rewriting
 published commits.
 
+## Roadmap items 6–7 continued — pruning, evaluation fixes, module split, Chaos (`e326f65` … `35903fa`)
+
+| | change | games | Elo | verdict |
+|---|---|---:|---|---|
+| E11 | reverse futility pruning | 1902 | +14.8 ± 11.0 | accepted; Chaos finds 2 ladder mates 2 plies later (documented) |
+| E12 | check extension | 2000 + 730 | +10.1 ± 10.8, then non-regression accepted | kept |
+| E13 | king-safety pressure from attack maps (audit §G.10 bug) | 390 | +31.3 ± 23.0 | non-regression accepted |
+| E14 | passed pawns judged by pawns ahead only (audit §G.8) | 440 | +34.1 ± 22.3 | non-regression accepted |
+| E15 | tapered king | 116 + 400 | **+116.2 ± 27.7** (fixed-length) | accepted |
+| E16 | tapered passed-pawn bonus | 1614 | +18.3 ± 13.1 | accepted |
+| E17 | Chaos sign fix, then 1.43× faster | 142 + 3×400 | Chaos vs Classical: −350 → −134 → **−35 ± 30** | kept |
+
+**Structure.** `lib.rs` was split into `search`, `eval`, `see`, `tt`, `position` and
+`mate` (identical trees, 0 warnings). An `Evaluator` trait with `Engine::set_evaluator` is
+now the plug-in point for neural evaluation. `SearchLimits::selective` turns off the
+lossy techniques, so exactness tests check only the score-preserving machinery.
+
+**Performance** (identical trees): evaluation over bitboards (1.14–1.36×); Chaos terms in
+one pass with a bitboard `gives_check` (1.43× for Chaos).
+
+**Method fixes.**
+- The arena now records the SPRT decision at the crossing, not after overshoot.
+- Large accepted gains get a fixed-length confirmation, because early stopping
+  inflates them (E15: +146 by SPRT, +116 confirmed).
+
+**Bugs found by measurement.**
+- The Chaos terms were sign-inverted with Black to move, caught by a new colour-symmetry
+  test for every style.
+- King safety counted the wrong side's moves.
+- Passed pawns were blocked by pawns behind them.
+
 ## Roadmap items 5–6 — measurement, then search strength (`f4d445e` … `bb4a8e0`)
 
 **Tournament infrastructure (item 5).**
