@@ -20,9 +20,6 @@ pub(crate) const RFP_MARGIN: i32 = 90;
 pub(crate) const FUTILITY_MAX_DEPTH: u8 = 2;
 /// ...with this margin per ply.
 pub(crate) const FUTILITY_MARGIN: i32 = 150;
-/// Internal iterative reduction: from this depth, a node with no TT move is searched one
-/// ply shallower (E23).
-const IIR_MIN_DEPTH: u8 = 4;
 /// Move-ordering bands; see `Searcher::ordered`.
 pub(crate) const ORDER_TT: i64 = 4_000_000;
 
@@ -554,12 +551,6 @@ impl Searcher {
             }
         }
         let pv_node = beta - alpha > 1;
-        // Internal iterative reduction: with no TT move, ordering here is at its worst, so
-        // a full-depth search spends most of its effort on the wrong moves. Search one ply
-        // shallower instead; that also fills the TT with a best move for the next visit.
-        if self.limits.selective && depth >= IIR_MIN_DEPTH && tt.and_then(|e| e.best).is_none() {
-            depth -= 1;
-        }
         let mut futility_eval = None;
         if self.limits.selective && !pv_node && !in_check {
             let static_eval = self.evaluator.evaluate(board);
