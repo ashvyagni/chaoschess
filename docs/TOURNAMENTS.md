@@ -125,6 +125,7 @@ game, so a rebuild mid-test can't change what is being tested. Results go to
 | E17 | fixed Chaos vs Classical | 2+0.02 | 400 | −133.9 ± 30.8 |
 | E17 | Chaos 1.43× faster (identical tree) vs Classical | 2+0.02 | 400 | **−34.9 ± 30.2** |
 | E18 | futility pruning vs `84e8995` | 2+0.02 | 476 SPRT + 400 fixed | SPRT **accepted** (+50.7); fixed-length **+73.2 ± 28.5** |
+| E19 | late move pruning vs `b3a0ce0` | 2+0.02 | 2000 | +3.5 ± 12.3, undecided → **rejected, reverted** |
 
 More rows are added as SPRTs finish. The full records are in `matches/`.
 
