@@ -124,6 +124,7 @@ game, so a rebuild mid-test can't change what is being tested. Results go to
 | E17 | Chaos sign fix vs old Chaos | 2+0.02 | 142 | **SPRT accepted H1** (+178, early-stop inflated) |
 | E17 | fixed Chaos vs Classical | 2+0.02 | 400 | −133.9 ± 30.8 |
 | E17 | Chaos 1.43× faster (identical tree) vs Classical | 2+0.02 | 400 | **−34.9 ± 30.2** |
+| E18 | futility pruning vs `84e8995` | 2+0.02 | 476 SPRT + 400 fixed | SPRT **accepted** (+50.7); fixed-length **+73.2 ± 28.5** |
 
 More rows are added as SPRTs finish. The full records are in `matches/`.
 

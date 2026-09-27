@@ -36,7 +36,8 @@ tests), measured by nodes at fixed depth, then SPRT'd against the previous commi
 | move ordering: good captures > killers > history > bad captures | **accepted**: +76.7 ± 30.5 Elo (E8) |
 | check extension | **kept**: +10.1 ± 10.8 undecided, then non-regression accepted (E12) |
 | reverse futility pruning | **accepted**: +14.8 ± 11.0 (E11), with a documented tactical cost |
-| futility / late move pruning | planned |
+| futility pruning | **accepted**: +73.2 ± 28.5 fixed-length (E18) |
+| late move pruning | planned |
 | mate distance pruning, IIR | planned |
 | singular extensions | planned; needs TT move + reliable depth |
 

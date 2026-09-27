@@ -16,6 +16,10 @@ pub(crate) const RFP_MAX_DEPTH: u8 = 6;
 /// ...when the static eval beats beta by this many centipawns per ply of depth.
 pub(crate) const RFP_MARGIN: i32 = 90;
 
+/// Futility pruning applies at this remaining depth or less...
+pub(crate) const FUTILITY_MAX_DEPTH: u8 = 2;
+/// ...with this margin per ply.
+pub(crate) const FUTILITY_MARGIN: i32 = 150;
 /// Move-ordering bands; see `Searcher::ordered`.
 pub(crate) const ORDER_TT: i64 = 4_000_000;
 
@@ -547,8 +551,10 @@ impl Searcher {
             }
         }
         let pv_node = beta - alpha > 1;
+        let mut futility_eval = None;
         if self.limits.selective && !pv_node && !in_check {
             let static_eval = self.evaluator.evaluate(board);
+            futility_eval = Some(static_eval);
             // Reverse futility pruning: this close to the horizon, a position whose static
             // score beats beta by a margin that grows with the remaining depth is very
             // unlikely to drop below beta within that depth. Return without searching.
@@ -569,6 +575,25 @@ impl Searcher {
         let mut score = -INF;
         for (index, m) in self.ordered(board, tt.and_then(|e| e.best), Some(ply)).into_iter().enumerate() {
             let child = board.make_move_new(m);
+            // Futility pruning: one or two plies from the horizon, a quiet move can't
+            // raise the score by much, so if the static eval plus a margin can't reach
+            // alpha, skip the move. The margin still counts as a fail-soft upper bound,
+            // so a node where every move is pruned returns that bound, not -INF.
+            if let Some(eval) = futility_eval {
+                if index > 0
+                    && depth <= FUTILITY_MAX_DEPTH
+                    && alpha.abs() < MATE_THRESHOLD
+                    && !is_capture(board, m)
+                    && m.get_promotion().is_none()
+                    && child.checkers() == &chess::EMPTY
+                {
+                    let bound = eval + FUTILITY_MARGIN * i32::from(depth);
+                    if bound <= alpha {
+                        score = score.max(bound);
+                        continue;
+                    }
+                }
+            }
             // Principal variation search: with good ordering the first move is usually
             // best, so later moves only need to be *refuted*. A null-window scout at
             // (alpha, alpha + 1) is enough to show a move is no better, and only a move
