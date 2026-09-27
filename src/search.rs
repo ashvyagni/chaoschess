@@ -164,15 +164,27 @@ pub(crate) struct Searcher {
     pub(crate) killers: Vec<[Option<ChessMove>; 2]>,
     /// Depth of the current iterative-deepening iteration; bounds check extensions.
     pub(crate) root_depth: u8,
+    /// Static evaluation. The search only ever calls `evaluate` through this.
+    pub(crate) evaluator: Arc<dyn Evaluator>,
 }
 
 impl Searcher {
     #[cfg(test)]
     pub(crate) fn new(limits: SearchLimits) -> Self {
-        Self::with_table(limits, Table::new(limits.hash_mb), Arc::new(AtomicBool::new(false)))
+        Self::with_table(
+            limits,
+            Table::new(limits.hash_mb),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(StyleEvaluator(limits.style)),
+        )
     }
 
-    pub(crate) fn with_table(limits: SearchLimits, table: Table, stop_flag: Arc<AtomicBool>) -> Self {
+    pub(crate) fn with_table(
+        limits: SearchLimits,
+        table: Table,
+        stop_flag: Arc<AtomicBool>,
+        evaluator: Arc<dyn Evaluator>,
+    ) -> Self {
         Self {
             table,
             limits,
@@ -189,6 +201,7 @@ impl Searcher {
             null_moves: vec![false],
             killers: vec![[None; 2]; PV_ROWS],
             root_depth: MAX_DEPTH,
+            evaluator,
         }
     }
 
@@ -433,7 +446,7 @@ impl Searcher {
         }
 
         if qs_ply >= MAX_QUIESCENCE_PLY {
-            return evaluate_with_style(board, self.limits.style);
+            return self.evaluator.evaluate(board);
         }
 
         // Stand pat: the side to move is not obliged to capture, so the static score is a
@@ -441,7 +454,7 @@ impl Searcher {
         let mut best = if in_check {
             -INF
         } else {
-            let stand = evaluate_with_style(board, self.limits.style);
+            let stand = self.evaluator.evaluate(board);
             if stand >= beta {
                 return stand;
             }
@@ -483,7 +496,7 @@ impl Searcher {
         // In check with every evasion pruned away cannot happen (evasions are never
         // pruned), so a -INF best here would be a bug rather than a mate.
         if best == -INF {
-            return evaluate_with_style(board, self.limits.style);
+            return self.evaluator.evaluate(board);
         }
         best
     }
@@ -535,7 +548,7 @@ impl Searcher {
         }
         let pv_node = beta - alpha > 1;
         if self.limits.selective && !pv_node && !in_check {
-            let static_eval = evaluate_with_style(board, self.limits.style);
+            let static_eval = self.evaluator.evaluate(board);
             // Reverse futility pruning: this close to the horizon, a position whose static
             // score beats beta by a margin that grows with the remaining depth is very
             // unlikely to drop below beta within that depth. Return without searching.
@@ -705,13 +718,27 @@ pub fn search(board: &Board, limits: SearchLimits) -> Option<SearchResult> {
 /// a real game, via UCI.
 pub struct Engine {
     table: Table,
+    /// `None`: use the handcrafted evaluation in the style given by `SearchLimits`.
+    evaluator: Option<Arc<dyn Evaluator>>,
 }
 
 impl Engine {
     pub fn new(hash_mb: usize) -> Self {
         Self {
             table: Table::new(hash_mb),
+            evaluator: None,
         }
+    }
+
+    /// Search with a custom evaluator instead of the style-selected handcrafted one. This
+    /// is the plug-in point for neural or hybrid evaluation.
+    pub fn set_evaluator(&mut self, evaluator: Arc<dyn Evaluator>) {
+        self.evaluator = Some(evaluator);
+    }
+
+    /// Go back to the style-selected handcrafted evaluation.
+    pub fn clear_evaluator(&mut self) {
+        self.evaluator = None;
     }
 
     /// Reallocate the table at a new size. Its contents are lost.
@@ -748,7 +775,11 @@ impl Engine {
     ) -> Option<SearchResult> {
         let board = &root.board;
         let table = std::mem::replace(&mut self.table, Table::placeholder());
-        let mut searcher = Searcher::with_table(limits, table, stop);
+        let evaluator = self
+            .evaluator
+            .clone()
+            .unwrap_or_else(|| Arc::new(StyleEvaluator(limits.style)));
+        let mut searcher = Searcher::with_table(limits, table, stop, evaluator);
         searcher.set_root(root);
         let result = iterate(&mut searcher, board, limits, on_info);
         self.table = std::mem::replace(&mut searcher.table, Table::placeholder());

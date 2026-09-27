@@ -3,6 +3,35 @@
 
 use super::*;
 
+/// The boundary between search and evaluation. The search calls `evaluate` and never
+/// needs to know what implements it: the handcrafted styles today, and a neural (NNUE) or
+/// hybrid evaluator later (roadmap items 8 and 12). Scores are centipawns from the side
+/// to move's point of view.
+///
+/// `Send + Sync` because an `Engine` moves into the UCI worker thread with its evaluator.
+pub trait Evaluator: Send + Sync {
+    fn evaluate(&self, board: &Board) -> i32;
+    /// Short identifier, reported in telemetry and match records.
+    fn name(&self) -> &'static str;
+}
+
+/// The handcrafted evaluation in one of its styles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StyleEvaluator(pub Style);
+
+impl Evaluator for StyleEvaluator {
+    fn evaluate(&self, board: &Board) -> i32 {
+        evaluate_with_style(board, self.0)
+    }
+
+    fn name(&self) -> &'static str {
+        match self.0 {
+            Style::Classical => "classical",
+            Style::Chaos => "chaos",
+        }
+    }
+}
+
 pub(crate) const PIECE_VALUES: [i32; 6] = [100, 320, 330, 500, 900, 20_000];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

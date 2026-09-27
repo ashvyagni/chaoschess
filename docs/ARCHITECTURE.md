@@ -104,9 +104,10 @@ unit-tested for that reason.
 
 ## Known structural debt
 
-- **The module split is done, but there is no `Evaluator` trait yet** (`search.rs` calls
-  `evaluate_with_style` directly). The trait is the prerequisite for plugging in a neural
-  evaluator without touching search.
+- **The evaluator seam exists** (`eval::Evaluator`, `Engine::set_evaluator`). The search
+  only calls `evaluate`, so a neural or hybrid evaluator plugs in without touching search.
+  What it can't provide yet is *incremental* evaluation (accumulators updated on
+  make/unmake). That needs an in-tree move generator (roadmap item 8).
 - **Evaluation is untapered** and its king-safety term runs a full move generation per
   call (~17% of search time in the latest profile).
 - **Move generation is the crate's.** It has no staged generation, so every node

@@ -659,6 +659,44 @@ mod tests {
         assert_eq!(passed_pawn_score(&white), -passed_pawn_score(&black));
     }
 
+    /// The evaluator seam: an engine given a different evaluator must search with it.
+    /// Material-only evaluation doesn't prefer centralisation, so from the start position
+    /// it scores 0 and needs no piece-square knowledge to pick a move.
+    #[test]
+    fn engine_searches_with_a_plugged_in_evaluator() {
+        struct MaterialOnly;
+        impl Evaluator for MaterialOnly {
+            fn evaluate(&self, board: &Board) -> i32 {
+                let mut score = 0;
+                for piece in chess::ALL_PIECES {
+                    let value = PIECE_VALUES[piece.to_index()];
+                    let own = (*board.pieces(piece) & *board.color_combined(board.side_to_move())).popcnt() as i32;
+                    let theirs = (*board.pieces(piece) & *board.color_combined(!board.side_to_move())).popcnt() as i32;
+                    score += value * (own - theirs);
+                }
+                score
+            }
+            fn name(&self) -> &'static str {
+                "material-only"
+            }
+        }
+        let limits = SearchLimits { depth: 3, ..Default::default() };
+        let no_stop = || Arc::new(AtomicBool::new(false));
+        let mut engine = Engine::new(4);
+        engine.set_evaluator(Arc::new(MaterialOnly));
+        let result = engine.search(&Board::default(), limits, no_stop(), &mut |_| {}).unwrap();
+        assert_eq!(result.score, 0, "material-only sees nothing to gain in the start position");
+        // A free queen is found through the plugged-in evaluator too.
+        let hanging = Board::from_str("4k3/8/8/3q4/8/8/8/3RK3 w - - 0 1").unwrap();
+        let won = engine.search(&hanging, limits, no_stop(), &mut |_| {}).unwrap();
+        assert_eq!(won.best_move.to_string(), "d1d5");
+        // Clearing restores the default: identical to a fresh engine's result.
+        engine.clear_evaluator();
+        engine.clear();
+        let default = engine.search(&Board::default(), limits, no_stop(), &mut |_| {}).unwrap();
+        assert_eq!(default, search(&Board::default(), SearchLimits { hash_mb: 4, ..limits }).unwrap());
+    }
+
     #[test]
     fn evaluation_rewards_bishop_pair() {
         let bishops = Board::from_str("4k3/8/8/8/8/8/2BB4/4K3 w - - 0 1").unwrap();
