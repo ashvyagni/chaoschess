@@ -119,6 +119,7 @@ game, so a rebuild mid-test can't change what is being tested. Results go to
 | E13 | king-safety pressure from attack maps vs `507da0b` | 2+0.02 | 390 | non-regression **accepted** at 376 games; +31.3 ± 23.0 |
 | E14 | passed pawns look only ahead vs `b794a98` | 2+0.02 | 440 | non-regression **accepted** at 426 games; +34.1 ± 22.3 |
 | E15 | tapered king vs `1041462` | 2+0.02 | 116 SPRT + 400 fixed | SPRT **accepted** (+145.8, early-stop inflated); fixed-length **+116.2 ± 27.7** |
+| E16 | tapered passed pawns vs `8a45f82` | 2+0.02 | 1614 | **+18.3 ± 13.1, SPRT accepted H1** |
 
 More rows are added as SPRTs finish. The full records are in `matches/`.
 

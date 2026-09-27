@@ -716,6 +716,16 @@ mod tests {
         }
     }
 
+    /// E16: the same passed pawn is worth more with fewer pieces left.
+    #[test]
+    fn passed_pawns_grow_in_value_as_pieces_come_off() {
+        let lone = Board::from_str("4k3/8/8/8/3P4/8/8/4K3 w - - 0 1").unwrap();
+        let base = passed_pawn_score(&lone);
+        assert_eq!(tapered_passed_pawns(&lone, MAX_PHASE), base);
+        assert_eq!(tapered_passed_pawns(&lone, 0), 2 * base);
+        assert!(tapered_passed_pawns(&lone, 12) > base && tapered_passed_pawns(&lone, 12) < 2 * base);
+    }
+
     #[test]
     fn evaluation_rewards_bishop_pair() {
         let bishops = Board::from_str("4k3/8/8/8/8/8/2BB4/4K3 w - - 0 1").unwrap();

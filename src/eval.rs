@@ -76,7 +76,7 @@ pub fn evaluate_with_style(board: &Board, style: Style) -> i32 {
             }
         }
     }
-    score += pawn_structure(&files) + passed_pawn_score(board);
+    score += pawn_structure(&files) + tapered_passed_pawns(board, phase);
     score += if bishops[0] >= 2 { 28 } else { 0 } - if bishops[1] >= 2 { 28 } else { 0 };
     score += king_safety(board, Color::White) - king_safety(board, Color::Black);
     if style == Style::Chaos {
@@ -188,6 +188,13 @@ pub(crate) fn pawn_structure(files: &[[u8; 8]; 2]) -> i32 {
         }
     }
     score
+}
+
+/// Passed-pawn bonus blended by phase: the base bonus in the middlegame, twice that with
+/// no pieces left, where a passed pawn is often the whole game (experiments/E16).
+pub(crate) fn tapered_passed_pawns(board: &Board, phase: i32) -> i32 {
+    let base = passed_pawn_score(board);
+    (base * phase + 2 * base * (MAX_PHASE - phase)) / MAX_PHASE
 }
 
 /// Bonus for passed pawns: no enemy pawn *ahead* of the pawn on its own or an adjacent
