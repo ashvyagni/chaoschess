@@ -120,6 +120,9 @@ game, so a rebuild mid-test can't change what is being tested. Results go to
 | E14 | passed pawns look only ahead vs `b794a98` | 2+0.02 | 440 | non-regression **accepted** at 426 games; +34.1 ± 22.3 |
 | E15 | tapered king vs `1041462` | 2+0.02 | 116 SPRT + 400 fixed | SPRT **accepted** (+145.8, early-stop inflated); fixed-length **+116.2 ± 27.7** |
 | E16 | tapered passed pawns vs `8a45f82` | 2+0.02 | 1614 | **+18.3 ± 13.1, SPRT accepted H1** |
+| E17 | Chaos vs Classical at `ce58776` | 2+0.02 | 400 | −350.3 ± 44.0 → sign bug found |
+| E17 | Chaos sign fix vs old Chaos | 2+0.02 | 142 | **SPRT accepted H1** (+178, early-stop inflated) |
+| E17 | fixed Chaos vs Classical | 2+0.02 | 400 | −133.9 ± 30.8 |
 
 More rows are added as SPRTs finish. The full records are in `matches/`.
 

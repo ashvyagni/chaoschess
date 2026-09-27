@@ -84,7 +84,11 @@ pub fn evaluate_with_style(board: &Board, style: Style) -> i32 {
         let mobility =
             MoveGen::new_legal(board).len() as i32 - MoveGen::new_legal(&black_board).len() as i32;
         let checks = checking_moves(board) - checking_moves(&black_board);
-        score += mobility * 3 + checks * 8 + center_control(board) * 2;
+        // These terms are relative to the side to move, but `score` is built from White's
+        // point of view and negated at the end for Black. Adding them unconverted rewarded
+        // the *opponent's* mobility and checks whenever Black was to move (E17).
+        let chaos = mobility * 3 + checks * 8 + center_control(board) * 2;
+        score += if board.side_to_move() == Color::White { chaos } else { -chaos };
     }
     if board.side_to_move() == Color::White {
         score

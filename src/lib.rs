@@ -726,6 +726,46 @@ mod tests {
         assert!(tapered_passed_pawns(&lone, 12) > base && tapered_passed_pawns(&lone, 12) < 2 * base);
     }
 
+    /// Colour symmetry: a position and its colour mirror (board flipped, colours
+    /// swapped, the other side to move) must evaluate identically for the side to move,
+    /// in every style. E17 found the Chaos terms failing this.
+    #[test]
+    fn evaluation_is_colour_symmetric_in_every_style() {
+        fn mirror(fen: &str) -> String {
+            let fields: Vec<&str> = fen.split_whitespace().collect();
+            let placement: Vec<String> = fields[0]
+                .split('/')
+                .rev()
+                .map(|rank| rank.chars().map(|c| if c.is_ascii_uppercase() { c.to_ascii_lowercase() } else { c.to_ascii_uppercase() }).collect())
+                .collect();
+            let side = if fields[1] == "w" { "b" } else { "w" };
+            let castling: String = if fields[2] == "-" {
+                "-".to_string()
+            } else {
+                let mut c: Vec<char> = fields[2].chars().map(|c| if c.is_ascii_uppercase() { c.to_ascii_lowercase() } else { c.to_ascii_uppercase() }).collect();
+                c.sort_by_key(|c| "KQkq".find(*c));
+                c.into_iter().collect()
+            };
+            format!("{} {side} {castling} - 0 1", placement.join("/"))
+        }
+        for fen in [
+            "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 1",
+        ] {
+            let a = Board::from_str(fen).unwrap();
+            let b = Board::from_str(&mirror(fen)).unwrap();
+            for style in [Style::Classical, Style::Chaos] {
+                assert_eq!(
+                    evaluate_with_style(&a, style),
+                    evaluate_with_style(&b, style),
+                    "{style:?} is not colour-symmetric: {fen} vs {}",
+                    mirror(fen)
+                );
+            }
+        }
+    }
+
     #[test]
     fn evaluation_rewards_bishop_pair() {
         let bishops = Board::from_str("4k3/8/8/8/8/8/2BB4/4K3 w - - 0 1").unwrap();
