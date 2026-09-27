@@ -38,7 +38,8 @@ tests), measured by nodes at fixed depth, then SPRT'd against the previous commi
 | reverse futility pruning | **accepted**: +14.8 ± 11.0 (E11), with a documented tactical cost |
 | futility pruning | **accepted**: +73.2 ± 28.5 fixed-length (E18) |
 | late move pruning | **rejected** (E19: +3.5 ± 12.3, no measurable effect) |
-| mate distance pruning, IIR | planned |
+| internal iterative reduction | **rejected** (E23: −37.2 ± 22.8) |
+| mate distance pruning | planned |
 | singular extensions | planned; needs TT move + reliable depth |
 
 ## Blocked on external resources

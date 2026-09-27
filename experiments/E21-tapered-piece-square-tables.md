@@ -40,6 +40,6 @@ already pays for pawn advancement, and it doubles in the endgame (E16). A passed
 the seventh therefore gained a further +55 on top. Changing three pieces' tables at once
 also breaks the "one variable at a time" rule in spirit.
 
-Two follow-ups are untested, each its own experiment:
+Two follow-ups, each its own experiment:
 - rook and queen endgame tables without the pawn table (done: E22, +13.9 ± 10.3, accepted);
-- tables fitted to game outcomes instead of written by hand.
+- tables fitted to game outcomes instead of written by hand (untested).
