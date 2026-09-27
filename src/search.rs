@@ -16,6 +16,10 @@ pub(crate) const RFP_MAX_DEPTH: u8 = 6;
 /// ...when the static eval beats beta by this many centipawns per ply of depth.
 pub(crate) const RFP_MARGIN: i32 = 90;
 
+/// Late move pruning applies at this remaining depth or less, after
+/// `LMP_BASE + depth^2` moves.
+pub(crate) const LMP_MAX_DEPTH: u8 = 3;
+pub(crate) const LMP_BASE: usize = 3;
 /// Futility pruning applies at this remaining depth or less...
 pub(crate) const FUTILITY_MAX_DEPTH: u8 = 2;
 /// ...with this margin per ply.
@@ -579,6 +583,18 @@ impl Searcher {
             // raise the score by much, so if the static eval plus a margin can't reach
             // alpha, skip the move. The margin still counts as a fail-soft upper bound,
             // so a node where every move is pruned returns that bound, not -INF.
+            // Late move pruning: at shallow depth, once enough moves have been tried, the
+            // remaining quiet moves (ordered last by history) are skipped outright.
+            if futility_eval.is_some()
+                && depth <= LMP_MAX_DEPTH
+                && index >= LMP_BASE + usize::from(depth) * usize::from(depth)
+                && alpha.abs() < MATE_THRESHOLD
+                && !is_capture(board, m)
+                && m.get_promotion().is_none()
+                && child.checkers() == &chess::EMPTY
+            {
+                continue;
+            }
             if let Some(eval) = futility_eval {
                 if index > 0
                     && depth <= FUTILITY_MAX_DEPTH
