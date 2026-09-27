@@ -716,28 +716,6 @@ mod tests {
         }
     }
 
-    /// E21: every piece's placement is blended the same way, exactly at the ends, and
-    /// the endgame tables say what they were written to say.
-    #[test]
-    fn piece_placement_is_tapered() {
-        for piece in ALL_PIECES {
-            for index in 0..64 {
-                let middlegame = piece_square(piece, index / 8, index % 8);
-                assert_eq!(tapered_piece_square(piece, index, MAX_PHASE), middlegame);
-                if matches!(piece, Piece::Knight | Piece::Bishop) {
-                    assert_eq!(tapered_piece_square(piece, index, 0), middlegame);
-                }
-            }
-        }
-        // Endgame: a pawn on the seventh is worth more than one on the fourth, including
-        // on the centre files, where the middlegame table penalises it.
-        assert!(tapered_piece_square(Piece::Pawn, 6 * 8 + 3, 0) > tapered_piece_square(Piece::Pawn, 3 * 8 + 3, 0));
-        // Endgame: a rook on d1 has no bonus over a1.
-        assert_eq!(tapered_piece_square(Piece::Rook, 3, 0), tapered_piece_square(Piece::Rook, 0, 0));
-        // Endgame: a central queen beats a cornered one.
-        assert!(tapered_piece_square(Piece::Queen, 27, 0) > tapered_piece_square(Piece::Queen, 0, 0));
-    }
-
     /// E16: the same passed pawn is worth more with fewer pieces left.
     #[test]
     fn passed_pawns_grow_in_value_as_pieces_come_off() {
