@@ -37,7 +37,13 @@ labelled *planned* and appear only in the last section.
 
 | module | lines | responsibility | key tests |
 |---|---:|---|---|
-| `src/lib.rs` | ~1,900 | search, evaluation, TT, SEE, draw rules, `Engine`, `Position`, mate prover | 30+ unit tests in-file |
+| `src/search.rs` | ~840 | iterative deepening, root PVS + aspiration, negamax (PVS, null move, RFP, LMR, check extension), quiescence, move ordering, `Engine`, `SearchLimits` | unit tests in `lib.rs` |
+| `src/eval.rs` | ~190 | static evaluation and the Chaos terms | symmetry + regression tests |
+| `src/see.rs` | ~140 | capture classification, static exchange evaluation | exchange tests |
+| `src/tt.rs` | ~130 | transposition table: key check, mate-score conversion, aging | collision + round-trip tests |
+| `src/position.rs` | ~75 | `Position` (board + history + clock), insufficient material | draw-rule tests |
+| `src/mate.rs` | ~50 | brute-force mate prover for suite validation | `tests/tactics.rs` |
+| `src/lib.rs` | ~670 | module wiring and re-exports, `parse_move`, `perft`, crate-wide tests | ~35 unit tests |
 | `src/uci.rs` | ~420 | UCI protocol; the search runs on a worker thread so `stop`/`isready`/`quit` work | `tests/uci.rs` (real binary) |
 | `src/time.rs` | ~130 | clock → soft/hard budget; property-tested safety bounds | grid property tests |
 | `src/fen.rs` | ~230 | strict FEN validation before the `chess` crate sees input | 25 malformed FENs |
@@ -98,9 +104,9 @@ unit-tested for that reason.
 
 ## Known structural debt
 
-- **`lib.rs` is a monolith** (~1,900 lines): search, evaluation, TT, SEE and the draw
-  rules share one file. Roadmap item 7 splits it (`search/`, `eval/`, `tt.rs`, `see.rs`)
-  behind an `Evaluator` trait. That split is also the prerequisite for neural evaluation.
+- **The module split is done, but there is no `Evaluator` trait yet** (`search.rs` calls
+  `evaluate_with_style` directly). The trait is the prerequisite for plugging in a neural
+  evaluator without touching search.
 - **Evaluation is untapered** and its king-safety term runs a full move generation per
   call (~17% of search time in the latest profile).
 - **Move generation is the crate's.** It has no staged generation, so every node
