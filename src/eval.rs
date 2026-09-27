@@ -60,11 +60,7 @@ pub fn evaluate_with_style(board: &Board, style: Style) -> i32 {
                 let rank = square.get_rank().to_index();
                 let file = square.get_file().to_index();
                 let relative_rank = if white { rank } else { 7 - rank };
-                let positional = if piece == Piece::King {
-                    tapered_king(relative_rank * 8 + file, phase)
-                } else {
-                    piece_square(piece, relative_rank, file)
-                };
+                let positional = tapered_piece_square(piece, relative_rank * 8 + file, phase);
                 let value = PIECE_VALUES[piece.to_index()] + positional;
                 score += if white { value } else { -value };
                 if piece == Piece::Pawn {
@@ -109,25 +105,73 @@ pub(crate) fn game_phase(board: &Board) -> i32 {
         .min(MAX_PHASE)
 }
 
-/// King placement, blended by phase: shelter in the middlegame, centralisation in the
-/// endgame. The audited evaluation used the middlegame table at every phase, so in a pawn
-/// ending it still told the king to stay in the corner (experiments/E15).
-pub(crate) fn tapered_king(index: usize, phase: i32) -> i32 {
-    // Index = relative rank * 8 + file, own back rank first (the same layout as
-    // `piece_square`). Values follow the widely used simplified-evaluation endgame table.
-    const KING_ENDGAME: [i32; 64] = [
-        -50, -30, -30, -30, -30, -30, -30, -50, //
-        -30, -30, 0, 0, 0, 0, -30, -30, //
-        -30, -10, 20, 30, 30, 20, -10, -30, //
-        -30, -10, 30, 40, 40, 30, -10, -30, //
-        -30, -10, 30, 40, 40, 30, -10, -30, //
-        -30, -10, 20, 30, 30, 20, -10, -30, //
-        -30, -20, -10, 0, 0, -10, -20, -30, //
-        -50, -40, -30, -20, -20, -30, -40, -50,
-    ];
-    let middlegame = piece_square(Piece::King, index / 8, index % 8);
-    (middlegame * phase + KING_ENDGAME[index] * (MAX_PHASE - phase)) / MAX_PHASE
+/// Piece placement, blended by phase between the middlegame table (`piece_square`) and
+/// an endgame table. The audited evaluation used one table at every phase: in a pawn
+/// ending it still told the king to stay in the corner (E15), penalised central pawns on
+/// the seventh rank, and rewarded rooks for sitting on d1/e1 (E21).
+pub(crate) fn tapered_piece_square(piece: Piece, index: usize, phase: i32) -> i32 {
+    let middlegame = piece_square(piece, index / 8, index % 8);
+    let endgame = match piece {
+        Piece::King => KING_ENDGAME[index],
+        Piece::Pawn => PAWN_ENDGAME[index / 8],
+        Piece::Rook => ROOK_ENDGAME[index],
+        Piece::Queen => QUEEN_ENDGAME[index],
+        // Knights and bishops want the centre at every phase; one table serves both.
+        Piece::Knight | Piece::Bishop => return middlegame,
+    };
+    (middlegame * phase + endgame * (MAX_PHASE - phase)) / MAX_PHASE
 }
+
+/// King placement, blended by phase: shelter in the middlegame, centralisation in the
+/// endgame (experiments/E15).
+pub(crate) fn tapered_king(index: usize, phase: i32) -> i32 {
+    tapered_piece_square(Piece::King, index, phase)
+}
+
+// Endgame tables. Index = relative rank * 8 + file, own back rank first (the same layout
+// as `piece_square`).
+
+/// The widely used simplified-evaluation endgame king table.
+const KING_ENDGAME: [i32; 64] = [
+    -50, -30, -30, -30, -30, -30, -30, -50, //
+    -30, -30, 0, 0, 0, 0, -30, -30, //
+    -30, -10, 20, 30, 30, 20, -10, -30, //
+    -30, -10, 30, 40, 40, 30, -10, -30, //
+    -30, -10, 30, 40, 40, 30, -10, -30, //
+    -30, -10, 20, 30, 30, 20, -10, -30, //
+    -30, -20, -10, 0, 0, -10, -20, -30, //
+    -50, -40, -30, -20, -20, -30, -40, -50,
+];
+
+/// Pawns: by relative rank only; advancement is what matters once pieces are off.
+/// (Passed pawns get their own, larger bonus on top: `tapered_passed_pawns`.)
+const PAWN_ENDGAME: [i32; 8] = [0, 0, 5, 10, 20, 35, 55, 0];
+
+/// Rooks: no back-rank centre bonus (that was about connecting after castling); the
+/// seventh rank still counts.
+const ROOK_ENDGAME: [i32; 64] = [
+    0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 0, //
+    0, 0, 0, 0, 0, 0, 0, 0, //
+    10, 10, 10, 10, 10, 10, 10, 10, //
+    0, 0, 0, 0, 0, 0, 0, 0,
+];
+
+/// Queens: centralisation, more than in the middlegame, where the queen should not
+/// come out early.
+const QUEEN_ENDGAME: [i32; 64] = [
+    -20, -10, -10, -10, -10, -10, -10, -20, //
+    -10, 0, 0, 0, 0, 0, 0, -10, //
+    -10, 0, 10, 10, 10, 10, 0, -10, //
+    -10, 0, 10, 20, 20, 10, 0, -10, //
+    -10, 0, 10, 20, 20, 10, 0, -10, //
+    -10, 0, 10, 10, 10, 10, 0, -10, //
+    -10, 0, 0, 0, 0, 0, 0, -10, //
+    -20, -10, -10, -10, -10, -10, -10, -20,
+];
 
 pub(crate) fn piece_square(piece: Piece, rank: usize, file: usize) -> i32 {
     const PAWN: [i32; 64] = [
