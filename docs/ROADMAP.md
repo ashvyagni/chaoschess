@@ -39,6 +39,7 @@ tests), measured by nodes at fixed depth, then SPRT'd against the previous commi
 | futility pruning | **accepted**: +73.2 ± 28.5 fixed-length (E18) |
 | late move pruning | **rejected** (E19: +3.5 ± 12.3, no measurable effect) |
 | internal iterative reduction | **rejected** (E23: −37.2 ± 22.8) |
+| null-move reduction scaled by eval margin | **rejected** (E24: +1.3 ± 8.7 at the 4000-game cap) |
 | mate distance pruning | planned |
 | singular extensions | planned; needs TT move + reliable depth |
 
