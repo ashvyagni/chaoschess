@@ -126,11 +126,11 @@ game, so a rebuild mid-test can't change what is being tested. Results go to
 | E17 | Chaos 1.43× faster (identical tree) vs Classical | 2+0.02 | 400 | **−34.9 ± 30.2** |
 | E18 | futility pruning vs `84e8995` | 2+0.02 | 476 SPRT + 400 fixed | SPRT **accepted** (+50.7); fixed-length **+73.2 ± 28.5** |
 | E19 | late move pruning vs `b3a0ce0` | 2+0.02 | 2000 | +3.5 ± 12.3, undecided → **rejected, reverted** |
+| E20 | cumulative: `e5d169f` vs E10 engine `7030d5a` | 2+0.02 | 400 | **+304.8 ± 41.4** (fixed length) |
 | E21 | tapered pawn/rook/queen tables vs `c04fcf0` | 2+0.02 | 1736 | −9.4 ± 13.6, SPRT **rejected, reverted** |
 | E22 | tapered rook/queen tables vs `6166315` | 2+0.02 | 2700 | +13.9 ± 10.3, SPRT **accepted** |
 | E23 | internal iterative reduction vs `2cafda6` | 2+0.02 | 534 | −37.2 ± 22.8, SPRT **rejected, reverted** |
 | E24 | eval-scaled null-move reduction vs `7924b63` | 2+0.02 | 4000 | +1.3 ± 8.7, undecided → **rejected, reverted** (13% time losses, symmetric) |
-| E20 | cumulative: `e5d169f` vs E10 engine `7030d5a` | 2+0.02 | 400 | **+304.8 ± 41.4** (fixed length) |
 
 More rows are added as SPRTs finish. The full records are in `matches/`.
 

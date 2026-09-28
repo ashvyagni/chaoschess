@@ -10,6 +10,9 @@ claim comes with its opponent, time control, sample size and confidence interval
 > started from **140–0** (Elo ≥ +566 at 95%, Wilson). The original code could not finish
 > a one-ply search in a normal middlegame. See `experiments/E4` and `docs/TOURNAMENTS.md`.
 
+> **Taking over this project?** Start with [`HANDOFF.md`](HANDOFF.md): status, rules,
+> results and next steps in one place.
+
 ## Quick start
 
 ```bash
