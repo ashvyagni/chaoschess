@@ -32,8 +32,10 @@ pub(crate) const ORDER_BAD_CAPTURE: i64 = -3_000_000;
 /// Null-move pruning is tried only with at least this much depth left.
 pub(crate) const NULL_MOVE_MIN_DEPTH: u8 = 3;
 
-/// Null-move search depth is `depth - 1 - (NULL_MOVE_BASE_REDUCTION + depth / 6)`.
+/// Null-move search depth is `depth - 1 - (NULL_MOVE_BASE_REDUCTION + depth / 6 + e)`,
+/// where `e = min((static_eval - beta) / NULL_MOVE_EVAL_DIVISOR, 3)` (E24).
 pub(crate) const NULL_MOVE_BASE_REDUCTION: u8 = 3;
+pub(crate) const NULL_MOVE_EVAL_DIVISOR: i32 = 200;
 
 /// Late move reductions apply from this remaining depth...
 pub(crate) const LMR_MIN_DEPTH: u8 = 3;
@@ -274,7 +276,11 @@ impl Searcher {
             return None;
         }
         let passed = board.null_move()?;
-        let reduction = NULL_MOVE_BASE_REDUCTION + depth / 6;
+        // The further the static score is above beta, the less a shallow refutation can
+        // change the verdict, so reduce more (E24). `static_eval >= beta` here, so the
+        // term is 0..=3.
+        let margin = ((static_eval - beta) / NULL_MOVE_EVAL_DIVISOR).min(3) as u8;
+        let reduction = NULL_MOVE_BASE_REDUCTION + depth / 6 + margin;
         // The null move resets the repetition window (clock 0): positions on either side
         // of a pass must never be counted as repetitions of each other.
         self.path.push(passed.get_hash());
